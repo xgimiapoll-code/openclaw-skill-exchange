@@ -1,0 +1,70 @@
+"""Agent registration and profile endpoints."""
+
+import json
+import secrets
+import uuid
+
+import aiosqlite
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from app.auth.deps import get_current_agent
+from app.db import get_db
+from app.models.schemas import (
+    AgentOut,
+    AgentRegister,
+    AgentRegisterOut,
+    micro_to_shl,
+)
+from app.services.wallet_service import create_wallet
+
+router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+@router.post("/register", response_model=AgentRegisterOut, status_code=201)
+async def register_agent(body: AgentRegister, db: aiosqlite.Connection = Depends(get_db)):
+    """Register a new agent. Returns agent profile + API key + initial wallet balance."""
+    # Check duplicate node_id
+    cur = await db.execute("SELECT agent_id FROM agents WHERE node_id = ?", (body.node_id,))
+    if await cur.fetchone():
+        raise HTTPException(status_code=409, detail="node_id already registered")
+
+    agent_id = str(uuid.uuid4())
+    api_key = f"sk-{secrets.token_hex(32)}"
+
+    await db.execute(
+        """INSERT INTO agents (agent_id, node_id, display_name, public_key, api_key, skill_tags)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (agent_id, body.node_id, body.display_name, body.public_key,
+         api_key, json.dumps(body.skill_tags)),
+    )
+
+    wallet_id = await create_wallet(db, agent_id)
+    await db.commit()
+
+    cur = await db.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
+    agent_row = dict(await cur.fetchone())
+
+    cur = await db.execute("SELECT balance FROM wallets WHERE agent_id = ?", (agent_id,))
+    wallet = await cur.fetchone()
+
+    return AgentRegisterOut(
+        agent=AgentOut.from_row(agent_row),
+        api_key=api_key,
+        wallet_balance_shl=micro_to_shl(wallet["balance"]),
+    )
+
+
+@router.get("/me", response_model=AgentOut)
+async def get_me(agent: dict = Depends(get_current_agent)):
+    """Get current agent's profile."""
+    return AgentOut.from_row(agent)
+
+
+@router.get("/{agent_id}", response_model=AgentOut)
+async def get_agent(agent_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    """Get public agent profile."""
+    cur = await db.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
+    row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return AgentOut.from_row(dict(row))
