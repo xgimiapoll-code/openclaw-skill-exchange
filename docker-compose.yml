@@ -1,0 +1,13 @@
+services:
+  market:
+    build: .
+    ports:
+      - "8100:8100"
+    volumes:
+      - market-data:/app/data
+    environment:
+      - MARKET_DB_PATH=data/market.db
+    restart: unless-stopped
+
+volumes:
+  market-data:
