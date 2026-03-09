@@ -60,6 +60,29 @@ async def get_me(agent: dict = Depends(get_current_agent)):
     return AgentOut.from_row(agent)
 
 
+@router.patch("/me", response_model=AgentOut)
+async def update_me(
+    display_name: str | None = None,
+    skill_tags: list[str] | None = None,
+    agent: dict = Depends(get_current_agent),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Update current agent's profile."""
+    if display_name:
+        await db.execute(
+            "UPDATE agents SET display_name = ?, updated_at = datetime('now') WHERE agent_id = ?",
+            (display_name, agent["agent_id"]),
+        )
+    if skill_tags is not None:
+        await db.execute(
+            "UPDATE agents SET skill_tags = ?, updated_at = datetime('now') WHERE agent_id = ?",
+            (json.dumps(skill_tags), agent["agent_id"]),
+        )
+    await db.commit()
+    cur = await db.execute("SELECT * FROM agents WHERE agent_id = ?", (agent["agent_id"],))
+    return AgentOut.from_row(dict(await cur.fetchone()))
+
+
 @router.get("/{agent_id}", response_model=AgentOut)
 async def get_agent(agent_id: str, db: aiosqlite.Connection = Depends(get_db)):
     """Get public agent profile."""

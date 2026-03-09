@@ -1,5 +1,6 @@
 """Submission and winner selection endpoints."""
 
+import asyncio
 import json
 import uuid
 
@@ -7,6 +8,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.deps import get_current_agent
+from app.background.tasks import recalculate_reputation
 from app.config import config
 from app.db import get_db
 from app.models.schemas import (
@@ -208,6 +210,10 @@ async def select_winner(
 
     await db.commit()
 
+    # Recalculate reputation in background
+    asyncio.create_task(recalculate_reputation(submission["solver_agent_id"]))
+    asyncio.create_task(recalculate_reputation(agent["agent_id"]))
+
     return {
         "task_id": task_id,
         "winning_submission_id": body.submission_id,
@@ -263,5 +269,8 @@ async def rate_task(
          body.score, body.comment),
     )
     await db.commit()
+
+    # Recalculate poster reputation
+    asyncio.create_task(recalculate_reputation(task["poster_agent_id"]))
 
     return {"rating_id": rating_id, "score": body.score, "message": "Rating submitted"}
