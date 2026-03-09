@@ -70,10 +70,11 @@ async def get_task(db: aiosqlite.Connection, task_id: str) -> dict | None:
 
 async def list_tasks(db: aiosqlite.Connection, status: str | None = None,
                      category: str | None = None, difficulty: str | None = None,
+                     tag: str | None = None, search: str | None = None,
                      page: int = 1, page_size: int = 20) -> tuple[list[dict], int]:
     """List tasks with optional filters."""
     conditions = []
-    params = []
+    params: list = []
 
     if status:
         conditions.append("status = ?")
@@ -84,6 +85,12 @@ async def list_tasks(db: aiosqlite.Connection, status: str | None = None,
     if difficulty:
         conditions.append("difficulty = ?")
         params.append(difficulty)
+    if tag:
+        conditions.append("tags LIKE ?")
+        params.append(f"%{tag}%")
+    if search:
+        conditions.append("(title LIKE ? OR description LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
 
     where = " WHERE " + " AND ".join(conditions) if conditions else ""
 

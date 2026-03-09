@@ -64,6 +64,14 @@ async def expire_overdue_tasks():
 
 async def recalculate_reputation(agent_id: str):
     """Recalculate reputation score for an agent based on ratings and activity."""
+    try:
+        return await _recalculate_reputation_inner(agent_id)
+    except Exception as e:
+        logger.debug("Reputation recalculation skipped: %s", e)
+        return 0.0
+
+
+async def _recalculate_reputation_inner(agent_id: str):
     async with get_db_ctx() as db:
         # Solver ratings (how others rate this agent as solver)
         cur = await db.execute(

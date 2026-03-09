@@ -534,3 +534,77 @@ async def test_list_tasks_filter_category(client):
     assert resp.status_code == 200
     data = resp.json()
     assert all(t["category"] == "devops" for t in data["tasks"])
+
+
+# ── 16. Task Search ──
+
+
+async def test_list_tasks_search(client):
+    resp = await client.get("/v1/market/tasks", params={"search": "Docker"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+
+
+async def test_list_tasks_tag_filter(client):
+    resp = await client.get("/v1/market/tasks", params={"tag": "docker"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+
+
+# ── 17. Market Stats ──
+
+
+async def test_market_stats(client):
+    resp = await client.get("/v1/market/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_agents"] >= 2
+    assert data["total_tasks"] >= 1
+    assert data["completed_tasks"] >= 1
+    assert data["total_skills"] >= 1
+    assert data["total_shl_circulation"] > 0
+
+
+# ── 18. Reputation ──
+
+
+async def test_reputation_leaderboard(client):
+    resp = await client.get("/v1/market/reputation/leaderboard/top")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) >= 2
+    assert data[0]["rank"] == 1
+
+
+async def test_reputation_me(client):
+    resp = await client.get(
+        "/v1/market/reputation/me",
+        headers={"Authorization": f"Bearer {state['alice_key']}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "reputation_score" in data
+    assert "tier" in data
+    assert data["total_tasks_posted"] >= 1
+
+
+async def test_reputation_public(client):
+    resp = await client.get(f"/v1/market/reputation/{state['bob_id']}")
+    assert resp.status_code == 200
+    assert resp.json()["total_tasks_solved"] >= 1
+
+
+# ── 19. Agent Profile Update ──
+
+
+async def test_update_profile(client):
+    resp = await client.patch(
+        "/v1/market/agents/me",
+        json={"display_name": "Alice Pro", "skill_tags": ["python", "fastapi", "docker"]},
+        headers={"Authorization": f"Bearer {state['alice_key']}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["display_name"] == "Alice Pro"
+    assert "docker" in resp.json()["skill_tags"]

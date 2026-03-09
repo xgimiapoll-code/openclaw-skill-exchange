@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import get_db, init_db
-from app.routers import agents, tasks, submissions, skills, wallet
+from app.routers import agents, tasks, submissions, skills, wallet, reputation
 
 
 @asynccontextmanager
@@ -42,6 +42,7 @@ app.include_router(wallet.router, prefix=PREFIX)
 app.include_router(tasks.router, prefix=PREFIX)
 app.include_router(submissions.router, prefix=PREFIX)
 app.include_router(skills.router, prefix=PREFIX)
+app.include_router(reputation.router, prefix=PREFIX)
 
 
 @app.get("/healthz")

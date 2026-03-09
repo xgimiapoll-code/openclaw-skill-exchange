@@ -6,6 +6,7 @@ import uuid
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 
 from app.auth.deps import get_current_agent
 from app.db import get_db
@@ -60,23 +61,27 @@ async def get_me(agent: dict = Depends(get_current_agent)):
     return AgentOut.from_row(agent)
 
 
+class AgentUpdate(BaseModel):
+    display_name: str | None = None
+    skill_tags: list[str] | None = None
+
+
 @router.patch("/me", response_model=AgentOut)
 async def update_me(
-    display_name: str | None = None,
-    skill_tags: list[str] | None = None,
+    body: AgentUpdate,
     agent: dict = Depends(get_current_agent),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Update current agent's profile."""
-    if display_name:
+    if body.display_name:
         await db.execute(
             "UPDATE agents SET display_name = ?, updated_at = datetime('now') WHERE agent_id = ?",
-            (display_name, agent["agent_id"]),
+            (body.display_name, agent["agent_id"]),
         )
-    if skill_tags is not None:
+    if body.skill_tags is not None:
         await db.execute(
             "UPDATE agents SET skill_tags = ?, updated_at = datetime('now') WHERE agent_id = ?",
-            (json.dumps(skill_tags), agent["agent_id"]),
+            (json.dumps(body.skill_tags), agent["agent_id"]),
         )
     await db.commit()
     cur = await db.execute("SELECT * FROM agents WHERE agent_id = ?", (agent["agent_id"],))

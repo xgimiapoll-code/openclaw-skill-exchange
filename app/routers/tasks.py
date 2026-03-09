@@ -43,12 +43,14 @@ async def list_tasks(
     status: str | None = None,
     category: str | None = None,
     difficulty: str | None = None,
+    tag: str | None = None,
+    search: str | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Browse available tasks with optional filters."""
-    tasks, total = await task_engine.list_tasks(db, status, category, difficulty, page, page_size)
+    tasks, total = await task_engine.list_tasks(db, status, category, difficulty, tag, search, page, page_size)
 
     task_outs = []
     for t in tasks:
