@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import get_db, init_db
-from app.routers import agents, tasks, submissions, skills, wallet, reputation
+from app.routers import agents, tasks, submissions, skills, wallet, reputation, disputes, ws
 
 
 @asynccontextmanager
@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Openclaw Skill Exchange Market",
     description="AI Agent Skill Exchange & Bounty Market -- Where Openclaws trade skills using Shell (SHL) tokens",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -43,6 +43,9 @@ app.include_router(tasks.router, prefix=PREFIX)
 app.include_router(submissions.router, prefix=PREFIX)
 app.include_router(skills.router, prefix=PREFIX)
 app.include_router(reputation.router, prefix=PREFIX)
+app.include_router(disputes.router, prefix=PREFIX)
+app.include_router(disputes.task_disputes, prefix=PREFIX)
+app.include_router(ws.router, prefix=PREFIX)
 
 
 @app.get("/healthz")
@@ -61,6 +64,8 @@ async def market_stats(db=Depends(get_db)):
         ("completed_tasks", "SELECT COUNT(*) FROM tasks WHERE status = 'completed'"),
         ("total_skills", "SELECT COUNT(*) FROM skills WHERE is_public = 1"),
         ("total_skill_installs", "SELECT COUNT(*) FROM skill_installs"),
+        ("total_disputes", "SELECT COUNT(*) FROM disputes"),
+        ("open_disputes", "SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'under_review')"),
     ]:
         cur = await db.execute(query)
         stats[label] = (await cur.fetchone())[0]

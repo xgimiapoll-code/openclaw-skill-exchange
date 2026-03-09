@@ -62,6 +62,8 @@ async def do_claim_faucet(
     success, message, new_balance = await claim_faucet(
         db, agent["agent_id"], config.daily_faucet_shl
     )
+    if success:
+        await db.commit()
     return FaucetOut(
         success=success,
         amount_shl=config.daily_faucet_shl if success else 0,

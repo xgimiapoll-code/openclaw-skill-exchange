@@ -1,4 +1,4 @@
-"""Skill catalog endpoints — publish, browse, install, fork."""
+"""Skill catalog endpoints — publish, browse, install, fork, rate."""
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,6 +10,7 @@ from app.models.schemas import (
     SkillInstallOut,
     SkillListOut,
     SkillOut,
+    SkillRateRequest,
 )
 from app.services import skill_service
 
@@ -36,6 +37,7 @@ async def create_skill(
             recipe=body.recipe,
             is_public=body.is_public,
         )
+        await db.commit()
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return SkillOut.from_row(skill)
@@ -101,6 +103,7 @@ async def install_skill(
     """Install a skill from the catalog."""
     try:
         install = await skill_service.install_skill(db, agent["agent_id"], skill_id)
+        await db.commit()
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {
@@ -120,6 +123,25 @@ async def fork_skill(
     """Fork a skill to create your own version."""
     try:
         skill = await skill_service.fork_skill(db, agent["agent_id"], skill_id)
+        await db.commit()
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return SkillOut.from_row(skill)
+
+
+@router.post("/{skill_id}/rate")
+async def rate_skill(
+    skill_id: str,
+    body: SkillRateRequest,
+    agent: dict = Depends(get_current_agent),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Rate a skill (1-5). Updates avg_rating."""
+    try:
+        result = await skill_service.rate_skill(
+            db, agent["agent_id"], skill_id, body.score, body.comment
+        )
+        await db.commit()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result

@@ -17,7 +17,8 @@ from app.models.schemas import (
     SubmissionCreate,
     SubmissionOut,
 )
-from app.services import task_engine, wallet_service, skill_service
+from app.services import task_engine, wallet_service
+from app.services.submission_service import complete_task_with_winner
 
 router = APIRouter(prefix="/tasks", tags=["submissions"])
 
@@ -124,88 +125,9 @@ async def select_winner(
         raise HTTPException(status_code=404, detail="Submission not found")
     submission = dict(submission)
 
-    bounty_shl = task["bounty_amount"] // 1_000_000
-
-    # Release bounty to solver
-    release_tx, bonus_tx = await wallet_service.release_bounty(
-        db, agent["agent_id"], submission["solver_agent_id"],
-        bounty_shl, task_id, config.bounty_winner_bonus_pct,
-    )
-
-    # Update submission
-    await db.execute(
-        """UPDATE submissions SET status = 'accepted', poster_feedback = ?, poster_rating = ?
-           WHERE submission_id = ?""",
-        (body.feedback, body.rating, body.submission_id),
-    )
-
-    # Update winning claim
-    await db.execute(
-        "UPDATE task_claims SET status = 'won', updated_at = datetime('now') WHERE claim_id = ?",
-        (submission["claim_id"],),
-    )
-
-    # Mark other claims as lost
-    await db.execute(
-        """UPDATE task_claims SET status = 'lost', updated_at = datetime('now')
-           WHERE task_id = ? AND claim_id != ? AND status IN ('active', 'submitted')""",
-        (task_id, submission["claim_id"]),
-    )
-
-    # Reject other submissions
-    await db.execute(
-        """UPDATE submissions SET status = 'rejected'
-           WHERE task_id = ? AND submission_id != ? AND status = 'pending'""",
-        (task_id, body.submission_id),
-    )
-
-    # Complete task
-    await db.execute(
-        """UPDATE tasks SET status = 'completed', winning_submission_id = ?,
-           updated_at = datetime('now') WHERE task_id = ?""",
-        (body.submission_id, task_id),
-    )
-
-    # Update solver stats
-    await db.execute(
-        "UPDATE agents SET total_tasks_solved = total_tasks_solved + 1 WHERE agent_id = ?",
-        (submission["solver_agent_id"],),
-    )
-
-    # Auto-create skill from recipe if provided
-    recipe = submission.get("skill_recipe", "{}")
-    if isinstance(recipe, str):
-        recipe = json.loads(recipe)
-
-    skill_id = None
-    if recipe and recipe.get("metadata", {}).get("name"):
-        meta = recipe["metadata"]
-        try:
-            skill = await skill_service.create_skill(
-                db,
-                author_agent_id=submission["solver_agent_id"],
-                name=meta["name"],
-                title=meta.get("title", meta["name"]),
-                description=meta.get("description"),
-                category=meta.get("category", "general"),
-                tags=meta.get("tags", []),
-                recipe=recipe,
-                source_task_id=task_id,
-            )
-            skill_id = skill["skill_id"]
-            # Auto-install for poster
-            await skill_service.install_skill(db, agent["agent_id"], skill_id)
-        except Exception:
-            pass  # Skill creation is best-effort
-
-    # Create rating record
-    rating_id = str(uuid.uuid4())
-    await db.execute(
-        """INSERT INTO ratings (rating_id, task_id, rater_agent_id, ratee_agent_id,
-           rating_type, score, comment)
-           VALUES (?, ?, ?, ?, 'poster_rates_solver', ?, ?)""",
-        (rating_id, task_id, agent["agent_id"], submission["solver_agent_id"],
-         body.rating, body.feedback),
+    # Delegate to service
+    result = await complete_task_with_winner(
+        db, task, submission, agent["agent_id"], body.feedback, body.rating,
     )
 
     await db.commit()
@@ -214,16 +136,7 @@ async def select_winner(
     asyncio.create_task(recalculate_reputation(submission["solver_agent_id"]))
     asyncio.create_task(recalculate_reputation(agent["agent_id"]))
 
-    return {
-        "task_id": task_id,
-        "winning_submission_id": body.submission_id,
-        "solver_agent_id": submission["solver_agent_id"],
-        "bounty_released_shl": bounty_shl,
-        "bonus_shl": bounty_shl * config.bounty_winner_bonus_pct // 100,
-        "skill_id": skill_id,
-        "release_tx_id": release_tx,
-        "bonus_tx_id": bonus_tx,
-    }
+    return result
 
 
 @router.post("/{task_id}/rate")

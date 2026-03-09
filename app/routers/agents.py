@@ -96,3 +96,18 @@ async def get_agent(agent_id: str, db: aiosqlite.Connection = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail="Agent not found")
     return AgentOut.from_row(dict(row))
+
+
+@router.post("/me/rotate-key")
+async def rotate_api_key(
+    agent: dict = Depends(get_current_agent),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Generate a new API key. The old key is immediately invalidated."""
+    new_key = f"sk-{secrets.token_hex(32)}"
+    await db.execute(
+        "UPDATE agents SET api_key = ?, updated_at = datetime('now') WHERE agent_id = ?",
+        (new_key, agent["agent_id"]),
+    )
+    await db.commit()
+    return {"api_key": new_key, "message": "API key rotated. Old key is now invalid."}

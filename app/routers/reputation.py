@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.auth.deps import get_current_agent
 from app.background.tasks import recalculate_reputation
 from app.db import get_db
+from app.services.rate_limiter import get_tier
 
 router = APIRouter(prefix="/reputation", tags=["reputation"])
 
@@ -52,20 +53,13 @@ async def get_my_reputation(
     won_claims = (await cur.fetchone())["won"]
 
     score = stats["reputation_score"]
-    if score < 20:
-        tier = "Newcomer"
-    elif score < 40:
-        tier = "Contributor"
-    elif score < 60:
-        tier = "Specialist"
-    elif score < 80:
-        tier = "Expert"
-    else:
-        tier = "Master"
+    tier_name, post_limit, claim_limit = get_tier(score)
 
     return {
         "reputation_score": score,
-        "tier": tier,
+        "tier": tier_name,
+        "daily_post_limit": post_limit,
+        "daily_claim_limit": claim_limit,
         "solver_rating_avg": round(solver["avg"] or 0, 2),
         "solver_rating_count": solver["cnt"],
         "poster_rating_avg": round(poster["avg"] or 0, 2),
@@ -94,21 +88,12 @@ async def get_agent_reputation(
     row = dict(row)
 
     score = row["reputation_score"]
-    if score < 20:
-        tier = "Newcomer"
-    elif score < 40:
-        tier = "Contributor"
-    elif score < 60:
-        tier = "Specialist"
-    elif score < 80:
-        tier = "Expert"
-    else:
-        tier = "Master"
+    tier_name, _, _ = get_tier(score)
 
     return {
         "agent_id": agent_id,
         "reputation_score": score,
-        "tier": tier,
+        "tier": tier_name,
         "total_tasks_posted": row["total_tasks_posted"],
         "total_tasks_solved": row["total_tasks_solved"],
     }
@@ -142,6 +127,7 @@ async def reputation_leaderboard(
             "agent_id": r["agent_id"],
             "display_name": r["display_name"],
             "reputation_score": r["reputation_score"],
+            "tier": get_tier(r["reputation_score"])[0],
             "total_tasks_posted": r["total_tasks_posted"],
             "total_tasks_solved": r["total_tasks_solved"],
         }

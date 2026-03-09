@@ -1,9 +1,12 @@
-"""Skill service — skill management and validation."""
+"""Skill service — skill management, validation, and ratings."""
 
 import json
 import uuid
 
 import aiosqlite
+
+from app.config import config
+from app.services import wallet_service
 
 
 async def create_skill(db: aiosqlite.Connection, author_agent_id: str,
@@ -12,7 +15,11 @@ async def create_skill(db: aiosqlite.Connection, author_agent_id: str,
                        tags: list[str] | None = None, recipe: dict | None = None,
                        is_public: bool = True, source_task_id: str | None = None,
                        fork_of: str | None = None) -> dict:
-    """Create a new skill."""
+    """Create a new skill. Caller is responsible for db.commit()."""
+    # Validate recipe structure if provided
+    if recipe:
+        validate_recipe(recipe)
+
     skill_id = str(uuid.uuid4())
 
     await db.execute(
@@ -23,10 +30,36 @@ async def create_skill(db: aiosqlite.Connection, author_agent_id: str,
          category, json.dumps(tags or []), json.dumps(recipe or {}),
          source_task_id, 1 if is_public else 0, fork_of),
     )
-    await db.commit()
 
     cur = await db.execute("SELECT * FROM skills WHERE skill_id = ?", (skill_id,))
     return dict(await cur.fetchone())
+
+
+def validate_recipe(recipe: dict):
+    """Validate recipe JSON has required structure. Raises ValueError if invalid."""
+    if not isinstance(recipe, dict):
+        raise ValueError("Recipe must be a JSON object")
+
+    # Empty recipe is OK (from submissions without recipe)
+    if not recipe:
+        return
+
+    # If metadata is provided, validate it
+    meta = recipe.get("metadata")
+    if meta:
+        if not isinstance(meta, dict):
+            raise ValueError("Recipe metadata must be a JSON object")
+        if "name" in meta and not meta["name"]:
+            raise ValueError("Recipe metadata.name cannot be empty")
+
+    # If steps are provided, validate each step
+    steps = recipe.get("steps")
+    if steps:
+        if not isinstance(steps, list):
+            raise ValueError("Recipe steps must be a list")
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                raise ValueError(f"Step {i} must be a JSON object")
 
 
 async def get_skill(db: aiosqlite.Connection, skill_id: str) -> dict | None:
@@ -68,7 +101,9 @@ async def list_skills(db: aiosqlite.Connection, category: str | None = None,
 
 
 async def install_skill(db: aiosqlite.Connection, agent_id: str, skill_id: str) -> dict:
-    """Install a skill for an agent."""
+    """Install a skill for an agent. Checks for skill publish reward threshold.
+    Caller is responsible for db.commit().
+    """
     skill = await get_skill(db, skill_id)
     if not skill:
         raise ValueError("Skill not found")
@@ -85,7 +120,6 @@ async def install_skill(db: aiosqlite.Connection, agent_id: str, skill_id: str) 
             "UPDATE skill_installs SET installed_version = ? WHERE install_id = ?",
             (skill["version"], existing["install_id"]),
         )
-        await db.commit()
         cur = await db.execute(
             "SELECT * FROM skill_installs WHERE install_id = ?", (existing["install_id"],)
         )
@@ -102,7 +136,21 @@ async def install_skill(db: aiosqlite.Connection, agent_id: str, skill_id: str) 
         "UPDATE skills SET usage_count = usage_count + 1, updated_at = datetime('now') WHERE skill_id = ?",
         (skill_id,),
     )
-    await db.commit()
+
+    # Check if skill just reached the publish reward threshold
+    new_count = skill["usage_count"] + 1
+    if (new_count >= config.skill_publish_min_installs
+            and not skill.get("reward_granted")):
+        try:
+            await wallet_service.grant_skill_reward(
+                db, skill["author_agent_id"], skill_id, config.skill_publish_reward_shl
+            )
+            await db.execute(
+                "UPDATE skills SET reward_granted = 1 WHERE skill_id = ?",
+                (skill_id,),
+            )
+        except Exception:
+            pass  # Best-effort reward
 
     cur = await db.execute("SELECT * FROM skill_installs WHERE install_id = ?", (install_id,))
     return dict(await cur.fetchone())
@@ -120,7 +168,7 @@ async def get_installed_skills(db: aiosqlite.Connection, agent_id: str) -> list[
 
 
 async def fork_skill(db: aiosqlite.Connection, agent_id: str, skill_id: str) -> dict:
-    """Fork a skill."""
+    """Fork a skill. Caller is responsible for db.commit()."""
     original = await get_skill(db, skill_id)
     if not original:
         raise ValueError("Skill not found")
@@ -135,3 +183,49 @@ async def fork_skill(db: aiosqlite.Connection, agent_id: str, skill_id: str) -> 
         recipe=json.loads(original.get("recipe", "{}")) if isinstance(original.get("recipe"), str) else original.get("recipe", {}),
         fork_of=skill_id,
     )
+
+
+async def rate_skill(db: aiosqlite.Connection, agent_id: str, skill_id: str,
+                     score: int, comment: str | None = None) -> dict:
+    """Rate a skill. Updates avg_rating. Caller is responsible for db.commit()."""
+    skill = await get_skill(db, skill_id)
+    if not skill:
+        raise ValueError("Skill not found")
+
+    if skill["author_agent_id"] == agent_id:
+        raise ValueError("Cannot rate your own skill")
+
+    # Check existing rating
+    cur = await db.execute(
+        "SELECT * FROM skill_ratings WHERE skill_id = ? AND agent_id = ?",
+        (skill_id, agent_id),
+    )
+    existing = await cur.fetchone()
+
+    if existing:
+        # Update existing rating
+        await db.execute(
+            "UPDATE skill_ratings SET score = ?, comment = ? WHERE rating_id = ?",
+            (score, comment, existing["rating_id"]),
+        )
+        rating_id = existing["rating_id"]
+    else:
+        rating_id = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO skill_ratings (rating_id, skill_id, agent_id, score, comment) VALUES (?, ?, ?, ?, ?)",
+            (rating_id, skill_id, agent_id, score, comment),
+        )
+
+    # Recalculate avg_rating
+    cur = await db.execute(
+        "SELECT AVG(score) as avg, COUNT(*) as cnt FROM skill_ratings WHERE skill_id = ?",
+        (skill_id,),
+    )
+    row = await cur.fetchone()
+    avg = row["avg"] or 0.0
+    await db.execute(
+        "UPDATE skills SET avg_rating = ?, updated_at = datetime('now') WHERE skill_id = ?",
+        (round(avg, 2), skill_id),
+    )
+
+    return {"rating_id": rating_id, "score": score, "skill_avg_rating": round(avg, 2)}

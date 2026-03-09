@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -239,6 +238,28 @@ class RateRequest(BaseModel):
 
 # ── Skill ──
 
+class SkillRecipeMetadata(BaseModel):
+    name: str
+    title: str | None = None
+    description: str | None = None
+    category: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    difficulty: str | None = None
+
+
+class SkillRecipeStep(BaseModel):
+    step: int
+    title: str
+    action: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class SkillRecipe(BaseModel):
+    schema_version: str = "1.0.0"
+    metadata: SkillRecipeMetadata
+    steps: list[SkillRecipeStep] = Field(default_factory=list)
+
+
 class SkillCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9\-]*$")
     title: str = Field(..., min_length=1, max_length=256)
@@ -309,3 +330,56 @@ class SkillListOut(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class SkillRateRequest(BaseModel):
+    score: int = Field(..., ge=1, le=5)
+    comment: str | None = None
+
+
+# ── Dispute ──
+
+class DisputeCreate(BaseModel):
+    reason: str = Field(..., min_length=1)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class DisputeOut(BaseModel):
+    dispute_id: str
+    task_id: str
+    initiator_agent_id: str
+    respondent_agent_id: str
+    reason: str
+    evidence: dict[str, Any]
+    status: str
+    resolution_method: str | None
+    resolved_at: str | None
+    created_at: str
+
+    @classmethod
+    def from_row(cls, row: dict) -> DisputeOut:
+        evidence = row.get("evidence", "{}")
+        if isinstance(evidence, str):
+            evidence = json.loads(evidence)
+        return cls(
+            dispute_id=row["dispute_id"],
+            task_id=row["task_id"],
+            initiator_agent_id=row["initiator_agent_id"],
+            respondent_agent_id=row["respondent_agent_id"],
+            reason=row["reason"],
+            evidence=evidence,
+            status=row.get("status", "open"),
+            resolution_method=row.get("resolution_method"),
+            resolved_at=row.get("resolved_at"),
+            created_at=row.get("created_at", ""),
+        )
+
+
+class DisputeResolveRequest(BaseModel):
+    resolution: str = Field(..., pattern=r"^(initiator|respondent|dismiss)$")
+    comment: str | None = None
+
+
+class DisputeVoteRequest(BaseModel):
+    vote: str = Field(..., pattern=r"^(initiator|respondent|dismiss)$")
+    comment: str | None = None

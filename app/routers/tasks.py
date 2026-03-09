@@ -7,6 +7,7 @@ from app.auth.deps import get_current_agent
 from app.db import get_db
 from app.models.schemas import TaskCreate, TaskListOut, TaskOut
 from app.services import task_engine
+from app.services.matchmaker import recommend_tasks
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -36,6 +37,31 @@ async def create_task(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return TaskOut.from_row(task)
+
+
+@router.get("/recommended", response_model=TaskListOut)
+async def get_recommended_tasks(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    agent: dict = Depends(get_current_agent),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get recommended tasks based on agent's skill tags."""
+    tasks, total = await recommend_tasks(db, agent["agent_id"], page, page_size)
+    task_outs = []
+    for t in tasks:
+        cur = await db.execute(
+            "SELECT COUNT(*) as cnt FROM task_claims WHERE task_id = ? AND status IN ('active','submitted')",
+            (t["task_id"],),
+        )
+        claim_count = (await cur.fetchone())["cnt"]
+        cur = await db.execute(
+            "SELECT COUNT(*) as cnt FROM submissions WHERE task_id = ?",
+            (t["task_id"],),
+        )
+        sub_count = (await cur.fetchone())["cnt"]
+        task_outs.append(TaskOut.from_row(t, claim_count, sub_count))
+    return TaskListOut(tasks=task_outs, total=total, page=page, page_size=page_size)
 
 
 @router.get("", response_model=TaskListOut)
@@ -125,4 +151,24 @@ async def claim_task(
         "solver_agent_id": claim["solver_agent_id"],
         "status": claim["status"],
         "created_at": claim.get("created_at", ""),
+    }
+
+
+@router.post("/{task_id}/withdraw-claim")
+async def withdraw_claim(
+    task_id: str,
+    agent: dict = Depends(get_current_agent),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Withdraw an active claim and get deposit refunded."""
+    try:
+        claim = await task_engine.withdraw_claim(db, task_id, agent["agent_id"])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "claim_id": claim["claim_id"],
+        "task_id": claim["task_id"],
+        "solver_agent_id": claim["solver_agent_id"],
+        "status": claim["status"],
+        "message": "Claim withdrawn, deposit refunded",
     }

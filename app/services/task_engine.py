@@ -9,6 +9,7 @@ import aiosqlite
 from app.config import config
 from app.models.schemas import shl_to_micro
 from app.services import wallet_service
+from app.services.rate_limiter import check_daily_limit
 
 
 async def create_task(db: aiosqlite.Connection, poster_agent_id: str,
@@ -26,10 +27,17 @@ async def create_task(db: aiosqlite.Connection, poster_agent_id: str,
     if agent and agent["reputation_score"] < config.reputation_ban_threshold:
         raise ValueError("Reputation too low to post tasks")
 
-    # Lock bounty
-    await wallet_service.lock_bounty(db, poster_agent_id, bounty_shl, "pending")
+    # Check daily rate limit
+    allowed, reason = await check_daily_limit(db, poster_agent_id, "post")
+    if not allowed:
+        raise ValueError(reason)
 
+    # Generate task_id first to avoid "pending" placeholder race condition
     task_id = str(uuid.uuid4())
+
+    # Lock bounty with real task_id
+    await wallet_service.lock_bounty(db, poster_agent_id, bounty_shl, task_id)
+
     hours = deadline_hours or config.task_default_deadline_hours
     deadline = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
 
@@ -41,12 +49,6 @@ async def create_task(db: aiosqlite.Connection, poster_agent_id: str,
          json.dumps(tags or []), difficulty, shl_to_micro(bounty_shl),
          shl_to_micro(estimated_self_cost_shl) if estimated_self_cost_shl else None,
          max_solvers, deadline, json.dumps(context or {})),
-    )
-
-    # Update the lock transaction reference
-    await db.execute(
-        "UPDATE transactions SET reference_id = ? WHERE reference_id = 'pending' AND tx_type = 'bounty_lock'",
-        (task_id,),
     )
 
     # Increment poster count
@@ -117,6 +119,19 @@ async def claim_task(db: aiosqlite.Connection, task_id: str, solver_agent_id: st
         raise ValueError(f"Task cannot be claimed (status: {task['status']})")
     if task["poster_agent_id"] == solver_agent_id:
         raise ValueError("Cannot claim your own task")
+
+    # Check reputation ban
+    cur = await db.execute(
+        "SELECT reputation_score FROM agents WHERE agent_id = ?", (solver_agent_id,)
+    )
+    agent = await cur.fetchone()
+    if agent and agent["reputation_score"] < config.reputation_ban_threshold:
+        raise ValueError("Reputation too low to claim tasks")
+
+    # Check daily rate limit
+    allowed, reason = await check_daily_limit(db, solver_agent_id, "claim")
+    if not allowed:
+        raise ValueError(reason)
 
     # Check existing claim
     cur = await db.execute(
@@ -197,3 +212,45 @@ async def cancel_task(db: aiosqlite.Connection, task_id: str, poster_agent_id: s
     await db.commit()
 
     return await get_task(db, task_id)
+
+
+async def withdraw_claim(db: aiosqlite.Connection, task_id: str, solver_agent_id: str) -> dict:
+    """Withdraw an active claim. Refunds deposit. Returns updated claim dict."""
+    task = await get_task(db, task_id)
+    if not task:
+        raise ValueError("Task not found")
+
+    # Find the active claim
+    cur = await db.execute(
+        "SELECT * FROM task_claims WHERE task_id = ? AND solver_agent_id = ? AND status = 'active'",
+        (task_id, solver_agent_id),
+    )
+    claim = await cur.fetchone()
+    if not claim:
+        raise ValueError("No active claim to withdraw")
+    claim = dict(claim)
+
+    # Refund claim deposit
+    await wallet_service.refund_claim_deposit(db, solver_agent_id, task_id, config.claim_deposit_shl)
+
+    # Update claim status
+    await db.execute(
+        "UPDATE task_claims SET status = 'withdrawn', updated_at = datetime('now') WHERE claim_id = ?",
+        (claim["claim_id"],),
+    )
+
+    # Check if this was the last active/submitted claim → revert task to open
+    cur = await db.execute(
+        "SELECT COUNT(*) as cnt FROM task_claims WHERE task_id = ? AND status IN ('active', 'submitted')",
+        (task_id,),
+    )
+    remaining = (await cur.fetchone())["cnt"]
+    if remaining == 0 and task["status"] == "claimed":
+        await db.execute(
+            "UPDATE tasks SET status = 'open', updated_at = datetime('now') WHERE task_id = ?",
+            (task_id,),
+        )
+
+    await db.commit()
+    cur = await db.execute("SELECT * FROM task_claims WHERE claim_id = ?", (claim["claim_id"],))
+    return dict(await cur.fetchone())

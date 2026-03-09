@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS agents (
     status TEXT DEFAULT 'active' CHECK(status IN ('active','suspended','banned')),
     total_tasks_posted INTEGER DEFAULT 0,
     total_tasks_solved INTEGER DEFAULT 0,
+    last_activity_reward TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -76,7 +77,8 @@ CREATE TABLE IF NOT EXISTS transactions (
     amount INTEGER NOT NULL CHECK(amount > 0),
     tx_type TEXT NOT NULL CHECK(tx_type IN (
         'mint','bounty_lock','bounty_release','bounty_refund',
-        'reward','penalty','faucet','burn','claim_deposit','claim_refund'
+        'reward','penalty','faucet','burn','claim_deposit','claim_refund',
+        'activity_reward','skill_reward'
     )),
     reference_id TEXT,
     reference_type TEXT,
@@ -147,6 +149,7 @@ CREATE TABLE IF NOT EXISTS skills (
     fork_of TEXT REFERENCES skills(skill_id),
     usage_count INTEGER DEFAULT 0,
     avg_rating REAL DEFAULT 0.0,
+    reward_granted INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),
     UNIQUE(name, author_agent_id, version)
@@ -162,6 +165,16 @@ CREATE TABLE IF NOT EXISTS skill_installs (
     UNIQUE(agent_id, skill_id)
 );
 
+CREATE TABLE IF NOT EXISTS skill_ratings (
+    rating_id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL REFERENCES skills(skill_id),
+    agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    score INTEGER NOT NULL CHECK(score >= 1 AND score <= 5),
+    comment TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(skill_id, agent_id)
+);
+
 CREATE TABLE IF NOT EXISTS ratings (
     rating_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(task_id),
@@ -172,6 +185,31 @@ CREATE TABLE IF NOT EXISTS ratings (
     comment TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(task_id, rater_agent_id, rating_type)
+);
+
+CREATE TABLE IF NOT EXISTS disputes (
+    dispute_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    initiator_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    respondent_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    reason TEXT NOT NULL,
+    evidence TEXT DEFAULT '{}',
+    status TEXT DEFAULT 'open' CHECK(status IN (
+        'open','under_review','resolved_initiator','resolved_respondent','dismissed'
+    )),
+    resolution_method TEXT CHECK(resolution_method IN ('auto','community_vote','admin')),
+    resolved_at TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS dispute_votes (
+    vote_id TEXT PRIMARY KEY,
+    dispute_id TEXT NOT NULL REFERENCES disputes(dispute_id),
+    voter_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    vote TEXT NOT NULL CHECK(vote IN ('initiator','respondent','dismiss')),
+    comment TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(dispute_id, voter_agent_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_node_id ON agents(node_id);
@@ -191,8 +229,13 @@ CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
 CREATE INDEX IF NOT EXISTS idx_skills_public ON skills(is_public);
 CREATE INDEX IF NOT EXISTS idx_skill_installs_agent ON skill_installs(agent_id);
 CREATE INDEX IF NOT EXISTS idx_skill_installs_skill ON skill_installs(skill_id);
+CREATE INDEX IF NOT EXISTS idx_skill_ratings_skill ON skill_ratings(skill_id);
+CREATE INDEX IF NOT EXISTS idx_skill_ratings_agent ON skill_ratings(agent_id);
 CREATE INDEX IF NOT EXISTS idx_ratings_task ON ratings(task_id);
 CREATE INDEX IF NOT EXISTS idx_ratings_ratee ON ratings(ratee_agent_id);
+CREATE INDEX IF NOT EXISTS idx_disputes_task ON disputes(task_id);
+CREATE INDEX IF NOT EXISTS idx_disputes_status ON disputes(status);
+CREATE INDEX IF NOT EXISTS idx_dispute_votes_dispute ON dispute_votes(dispute_id);
 """
 
 
