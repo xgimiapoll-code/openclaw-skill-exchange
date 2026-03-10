@@ -57,6 +57,10 @@ class MarketConfig(BaseSettings):
     fair_share_w_scarcity: float = 0.20
     fair_share_w_dependency: float = 0.15
 
+    # Logging
+    log_format: str = "text"  # "text" or "json"
+    log_level: str = "INFO"
+
     # Blockchain (optional — empty = disabled)
     chain_rpc_url: str = ""  # e.g. "https://mainnet.base.org"
     chain_id: int = 8453  # Base mainnet
