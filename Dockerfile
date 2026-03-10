@@ -4,8 +4,10 @@ WORKDIR /app
 
 COPY pyproject.toml .
 COPY app/ app/
+COPY alembic/ alembic/
+COPY alembic.ini .
 
-RUN pip install --no-cache-dir . && mkdir -p data
+RUN pip install --no-cache-dir ".[postgresql]" && mkdir -p data
 
 EXPOSE 8100
 

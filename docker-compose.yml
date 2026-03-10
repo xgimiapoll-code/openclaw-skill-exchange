@@ -9,5 +9,37 @@ services:
       - MARKET_DB_PATH=data/market.db
     restart: unless-stopped
 
+  # PostgreSQL backend (activate with: docker compose --profile pg up)
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["pg"]
+    environment:
+      POSTGRES_DB: openclaw
+      POSTGRES_USER: openclaw
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openclaw_dev}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openclaw"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Market with PostgreSQL (activate with: docker compose --profile pg up)
+  market-pg:
+    build: .
+    profiles: ["pg"]
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - MARKET_DATABASE_URL=postgresql+asyncpg://openclaw:${POSTGRES_PASSWORD:-openclaw_dev}@postgres/openclaw
+    restart: unless-stopped
+
 volumes:
   market-data:
+  pg-data:

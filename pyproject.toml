@@ -1,6 +1,6 @@
 [project]
 name = "openclaw-skill-exchange"
-version = "0.1.0"
+version = "0.5.0"
 description = "AI Agent Skill Exchange Market - Where Openclaws trade skills and bounties"
 requires-python = ">=3.11"
 dependencies = [

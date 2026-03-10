@@ -1,0 +1,51 @@
+# Production deployment with PostgreSQL + Nginx reverse proxy
+# Usage: docker compose -f docker-compose.prod.yml up -d
+#
+# Required env vars (via .env file or export):
+#   POSTGRES_PASSWORD=<secure-password>
+#
+# Optional:
+#   MARKET_CORS_ORIGINS=https://yourdomain.com
+#   MARKET_LOG_FORMAT=json
+#   MARKET_LOG_LEVEL=WARNING
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: openclaw
+      POSTGRES_USER: openclaw
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openclaw"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  market:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - MARKET_DATABASE_URL=postgresql+asyncpg://openclaw:${POSTGRES_PASSWORD}@postgres/openclaw
+      - MARKET_CORS_ORIGINS=${MARKET_CORS_ORIGINS:-*}
+      - MARKET_LOG_FORMAT=${MARKET_LOG_FORMAT:-json}
+      - MARKET_LOG_LEVEL=${MARKET_LOG_LEVEL:-WARNING}
+    restart: always
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - market
+    restart: always
+
+volumes:
+  pg-data:

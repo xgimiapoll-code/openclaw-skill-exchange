@@ -7,13 +7,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from app.db import get_db, init_db
 from app.logging_config import setup_logging
 from app.routers import agents, tasks, submissions, skills, wallet, reputation, disputes, ws, bridge, collaboration, guide, mcp
 
 logger = logging.getLogger(__name__)
+_start_time = time.monotonic()
 
 
 @asynccontextmanager
@@ -31,7 +32,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Openclaw Skill Exchange Market",
     description="AI Agent Collaboration & Bounty Market — Task decomposition, fair-share distribution, skill marketplace, and SHL tokens on Base L2",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -197,7 +198,7 @@ Solution becomes a Skill       Skill auto-installed for poster</div>
 </div>
 
 <footer>
-  <p>OpenClaw Skill Exchange v0.4.0 · <a href="https://github.com/xgimiapoll-code/openclaw-skill-exchange">GitHub</a> · Apache 2.0</p>
+  <p>OpenClaw Skill Exchange v0.5.0 · <a href="https://github.com/xgimiapoll-code/openclaw-skill-exchange">GitHub</a> · Apache 2.0</p>
 </footer>
 
 </body>
@@ -205,8 +206,60 @@ Solution becomes a Skill       Skill auto-installed for poster</div>
 
 
 @app.get("/healthz")
-async def healthz():
-    return {"status": "ok", "service": "openclaw-skill-exchange"}
+async def healthz(db=Depends(get_db)):
+    """Health check with DB connectivity verification."""
+    checks = {"db": "fail"}
+    try:
+        cur = await db.execute("SELECT 1")
+        await cur.fetchone()
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+
+    from app.db import _IS_PG
+    status = "ok" if checks["db"] == "ok" else "degraded"
+    uptime_seconds = round(time.monotonic() - _start_time)
+    return {
+        "status": status,
+        "service": "openclaw-skill-exchange",
+        "version": app.version,
+        "db_backend": "postgresql" if _IS_PG else "sqlite",
+        "checks": checks,
+        "uptime_seconds": uptime_seconds,
+    }
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def prometheus_metrics(db=Depends(get_db)):
+    """Prometheus-compatible metrics endpoint."""
+    lines = []
+
+    cur = await db.execute("SELECT COUNT(*) FROM agents")
+    agents_count = (await cur.fetchone())[0]
+    lines.append(f"openclaw_agents_total {agents_count}")
+
+    cur = await db.execute(
+        "SELECT status, COUNT(*) as cnt FROM tasks GROUP BY status"
+    )
+    for row in await cur.fetchall():
+        lines.append(f'openclaw_tasks_total{{status="{row["status"]}"}} {row["cnt"]}')
+
+    cur = await db.execute("SELECT COUNT(*) FROM skills WHERE is_public = 1")
+    skills_count = (await cur.fetchone())[0]
+    lines.append(f"openclaw_skills_total {skills_count}")
+
+    cur = await db.execute("SELECT COALESCE(SUM(balance + frozen_balance), 0) FROM wallets")
+    shl_micro = (await cur.fetchone())[0]
+    lines.append(f"openclaw_shl_circulation_micro {shl_micro}")
+
+    cur = await db.execute("SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'under_review')")
+    disputes_count = (await cur.fetchone())[0]
+    lines.append(f"openclaw_disputes_open {disputes_count}")
+
+    uptime = round(time.monotonic() - _start_time)
+    lines.append(f"openclaw_uptime_seconds {uptime}")
+
+    return "\n".join(lines) + "\n"
 
 
 @app.get("/v1/market/stats")
