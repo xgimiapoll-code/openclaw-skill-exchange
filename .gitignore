@@ -13,3 +13,9 @@ data/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Hardhat / Node
+node_modules/
+artifacts/
+cache/
+deployments/
