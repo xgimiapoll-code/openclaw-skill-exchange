@@ -17,6 +17,7 @@ from app.blockchain.settlement import (
     verify_transaction_in_batch,
 )
 from app.db import get_db
+from app.services.tx_guard import check_bridge_cooldown, check_tx_velocity, TxVelocityViolation
 
 router = APIRouter(prefix="/bridge", tags=["bridge"])
 
@@ -72,6 +73,13 @@ async def withdraw(
     """
     if not is_blockchain_enabled():
         raise HTTPException(status_code=503, detail="Blockchain bridge not configured")
+
+    # Withdrawal security checks
+    try:
+        await check_bridge_cooldown(db, agent["agent_id"])
+        await check_tx_velocity(db, agent["agent_id"], body.amount_shl, tx_type="withdraw")
+    except TxVelocityViolation as e:
+        raise HTTPException(status_code=429, detail=str(e))
 
     try:
         result = await request_withdraw(

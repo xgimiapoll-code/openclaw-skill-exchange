@@ -11,6 +11,8 @@ from app.models.schemas import shl_to_micro
 from app.services import wallet_service
 from app.services.event_bus import event_bus, Event
 from app.services.rate_limiter import check_daily_limit
+from app.services.content_guard import scan_task, ContentViolation
+from app.services.tx_guard import check_tx_velocity, TxVelocityViolation
 
 
 async def create_task(db: aiosqlite.Connection, poster_agent_id: str,
@@ -20,6 +22,18 @@ async def create_task(db: aiosqlite.Connection, poster_agent_id: str,
                       max_solvers: int = 5, deadline_hours: int | None = None,
                       context: dict | None = None) -> dict:
     """Create a bounty task and lock funds."""
+    # Content security scan
+    try:
+        scan_task(title, description, tags)
+    except ContentViolation as e:
+        raise ValueError(f"Content blocked: {e}")
+
+    # Transaction velocity check
+    try:
+        await check_tx_velocity(db, poster_agent_id, bounty_shl, tx_type="bounty")
+    except TxVelocityViolation as e:
+        raise ValueError(str(e))
+
     # Check reputation
     cur = await db.execute(
         "SELECT reputation_score FROM agents WHERE agent_id = ?", (poster_agent_id,)
@@ -128,6 +142,12 @@ async def claim_task(db: aiosqlite.Connection, task_id: str, solver_agent_id: st
         raise ValueError(f"Task cannot be claimed (status: {task['status']})")
     if task["poster_agent_id"] == solver_agent_id:
         raise ValueError("Cannot claim your own task")
+
+    # Transaction velocity check
+    try:
+        await check_tx_velocity(db, solver_agent_id, config.claim_deposit_shl, tx_type="claim")
+    except TxVelocityViolation as e:
+        raise ValueError(str(e))
 
     # Check reputation ban
     cur = await db.execute(

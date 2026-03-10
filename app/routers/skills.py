@@ -13,6 +13,7 @@ from app.models.schemas import (
     SkillRateRequest,
 )
 from app.services import skill_service
+from app.services.content_guard import scan_skill, ContentViolation
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
@@ -24,6 +25,12 @@ async def create_skill(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Publish a new skill to the catalog."""
+    # Content security scan
+    try:
+        scan_skill(body.name, body.title, body.description, body.recipe, body.tags)
+    except ContentViolation as e:
+        raise HTTPException(status_code=400, detail=f"Content blocked: {e}")
+
     try:
         skill = await skill_service.create_skill(
             db,

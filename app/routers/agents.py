@@ -16,6 +16,8 @@ from app.models.schemas import (
     AgentRegisterOut,
     micro_to_shl,
 )
+from app.services.content_guard import scan_text, scan_tags, ContentViolation
+from app.services.tx_guard import check_registration_rate, TxVelocityViolation
 from app.services.wallet_service import create_wallet
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -24,6 +26,20 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 @router.post("/register", response_model=AgentRegisterOut, status_code=201)
 async def register_agent(body: AgentRegister, db: aiosqlite.Connection = Depends(get_db)):
     """Register a new agent. Returns agent profile + API key + initial wallet balance."""
+    # Anti-sybil: registration rate limit
+    try:
+        await check_registration_rate(db, body.node_id)
+    except TxVelocityViolation as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
+    # Content scan on display name and tags
+    try:
+        scan_text(body.display_name, "display_name")
+        if body.skill_tags:
+            scan_tags(body.skill_tags, "skill_tags")
+    except ContentViolation as e:
+        raise HTTPException(status_code=400, detail=f"Content blocked: {e}")
+
     # Check duplicate node_id
     cur = await db.execute("SELECT agent_id FROM agents WHERE node_id = ?", (body.node_id,))
     if await cur.fetchone():

@@ -18,6 +18,7 @@ from app.models.schemas import (
     SubmissionOut,
 )
 from app.services import task_engine, wallet_service
+from app.services.content_guard import scan_submission, ContentViolation
 from app.services.event_bus import event_bus, Event
 from app.services.submission_service import complete_task_with_winner
 
@@ -32,6 +33,12 @@ async def create_submission(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Submit a solution for a claimed task."""
+    # Content security scan
+    try:
+        scan_submission(body.summary, body.skill_recipe or None)
+    except ContentViolation as e:
+        raise HTTPException(status_code=400, detail=f"Content blocked: {e}")
+
     task = await task_engine.get_task(db, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
