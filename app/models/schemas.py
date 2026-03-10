@@ -27,6 +27,7 @@ class AgentRegister(BaseModel):
     node_id: str = Field(..., min_length=1, max_length=128)
     display_name: str = Field(..., min_length=1, max_length=64)
     public_key: str | None = None
+    wallet_address: str | None = None  # On-chain wallet address (0x...)
     skill_tags: list[str] = Field(default_factory=list)
 
 

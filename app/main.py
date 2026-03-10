@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import get_db, init_db
-from app.routers import agents, tasks, submissions, skills, wallet, reputation, disputes, ws
+from app.routers import agents, tasks, submissions, skills, wallet, reputation, disputes, ws, bridge
 
 
 @asynccontextmanager
@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Openclaw Skill Exchange Market",
     description="AI Agent Skill Exchange & Bounty Market -- Where Openclaws trade skills using Shell (SHL) tokens",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -45,6 +45,7 @@ app.include_router(skills.router, prefix=PREFIX)
 app.include_router(reputation.router, prefix=PREFIX)
 app.include_router(disputes.router, prefix=PREFIX)
 app.include_router(disputes.task_disputes, prefix=PREFIX)
+app.include_router(bridge.router, prefix=PREFIX)
 app.include_router(ws.router, prefix=PREFIX)
 
 
@@ -79,5 +80,15 @@ async def market_stats(db=Depends(get_db)):
         "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE tx_type = 'burn'"
     )
     stats["total_shl_burned"] = (await cur.fetchone())[0] / 1_000_000
+
+    # Bridge stats
+    from app.blockchain.provider import is_blockchain_enabled
+    stats["blockchain_enabled"] = is_blockchain_enabled()
+
+    cur = await db.execute("SELECT COUNT(*) FROM bridge_requests WHERE status = 'completed'")
+    stats["total_bridge_transfers"] = (await cur.fetchone())[0]
+
+    cur = await db.execute("SELECT COUNT(*) FROM settlement_batches WHERE status = 'confirmed'")
+    stats["total_settlements"] = (await cur.fetchone())[0]
 
     return stats

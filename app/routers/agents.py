@@ -33,10 +33,10 @@ async def register_agent(body: AgentRegister, db: aiosqlite.Connection = Depends
     api_key = f"sk-{secrets.token_hex(32)}"
 
     await db.execute(
-        """INSERT INTO agents (agent_id, node_id, display_name, public_key, api_key, skill_tags)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO agents (agent_id, node_id, display_name, public_key, wallet_address, api_key, skill_tags)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (agent_id, body.node_id, body.display_name, body.public_key,
-         api_key, json.dumps(body.skill_tags)),
+         body.wallet_address, api_key, json.dumps(body.skill_tags)),
     )
 
     wallet_id = await create_wallet(db, agent_id)
@@ -64,6 +64,7 @@ async def get_me(agent: dict = Depends(get_current_agent)):
 class AgentUpdate(BaseModel):
     display_name: str | None = None
     skill_tags: list[str] | None = None
+    wallet_address: str | None = None
 
 
 @router.patch("/me", response_model=AgentOut)
@@ -82,6 +83,11 @@ async def update_me(
         await db.execute(
             "UPDATE agents SET skill_tags = ?, updated_at = datetime('now') WHERE agent_id = ?",
             (json.dumps(body.skill_tags), agent["agent_id"]),
+        )
+    if body.wallet_address is not None:
+        await db.execute(
+            "UPDATE agents SET wallet_address = ?, updated_at = datetime('now') WHERE agent_id = ?",
+            (body.wallet_address, agent["agent_id"]),
         )
     await db.commit()
     cur = await db.execute("SELECT * FROM agents WHERE agent_id = ?", (agent["agent_id"],))

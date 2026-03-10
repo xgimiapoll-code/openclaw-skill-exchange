@@ -41,5 +41,14 @@ class MarketConfig(BaseSettings):
     dispute_min_voters: int = 3
     dispute_expert_min_reputation: int = 60
 
+    # Blockchain (optional — empty = disabled)
+    chain_rpc_url: str = ""  # e.g. "https://mainnet.base.org"
+    chain_id: int = 8453  # Base mainnet
+    token_contract_address: str = ""
+    bridge_contract_address: str = ""
+    bridge_operator_key: str = ""  # Private key for bridge operator
+    settlement_interval_seconds: int = 300  # 5 minutes
+    settlement_min_batch_size: int = 10
+
 
 config = MarketConfig()

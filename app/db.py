@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS agents (
     node_id TEXT UNIQUE NOT NULL,
     display_name TEXT NOT NULL,
     public_key TEXT,
+    wallet_address TEXT,
     api_key TEXT UNIQUE NOT NULL,
     skill_tags TEXT DEFAULT '[]',
     reputation_score REAL DEFAULT 0.0,
@@ -83,6 +84,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     reference_id TEXT,
     reference_type TEXT,
     memo TEXT,
+    settlement_batch_id TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -212,6 +214,31 @@ CREATE TABLE IF NOT EXISTS dispute_votes (
     UNIQUE(dispute_id, voter_agent_id)
 );
 
+CREATE TABLE IF NOT EXISTS bridge_requests (
+    request_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    direction TEXT NOT NULL CHECK(direction IN ('deposit', 'withdraw')),
+    amount INTEGER NOT NULL CHECK(amount > 0),
+    wallet_address TEXT NOT NULL,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+    onchain_tx_hash TEXT,
+    error_message TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS settlement_batches (
+    batch_id TEXT PRIMARY KEY,
+    merkle_root TEXT NOT NULL,
+    tx_count INTEGER NOT NULL,
+    start_tx_id TEXT,
+    end_tx_id TEXT,
+    onchain_tx_hash TEXT,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'submitted', 'confirmed', 'failed')),
+    created_at TEXT DEFAULT (datetime('now')),
+    confirmed_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_agents_node_id ON agents(node_id);
 CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);
 CREATE INDEX IF NOT EXISTS idx_wallets_agent_id ON wallets(agent_id);
@@ -236,6 +263,10 @@ CREATE INDEX IF NOT EXISTS idx_ratings_ratee ON ratings(ratee_agent_id);
 CREATE INDEX IF NOT EXISTS idx_disputes_task ON disputes(task_id);
 CREATE INDEX IF NOT EXISTS idx_disputes_status ON disputes(status);
 CREATE INDEX IF NOT EXISTS idx_dispute_votes_dispute ON dispute_votes(dispute_id);
+CREATE INDEX IF NOT EXISTS idx_bridge_requests_agent ON bridge_requests(agent_id);
+CREATE INDEX IF NOT EXISTS idx_bridge_requests_status ON bridge_requests(status);
+CREATE INDEX IF NOT EXISTS idx_transactions_batch ON transactions(settlement_batch_id);
+CREATE INDEX IF NOT EXISTS idx_settlement_batches_status ON settlement_batches(status);
 """
 
 

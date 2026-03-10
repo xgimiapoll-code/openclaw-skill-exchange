@@ -287,6 +287,40 @@ async def _calculate_dispute_score(db, agent_id: str) -> float:
     return max(0.0, min(5.0, score))
 
 
+async def run_settlement():
+    """Create settlement batches and process pending bridge withdrawals."""
+    from app.blockchain.provider import is_blockchain_enabled
+    if not is_blockchain_enabled():
+        return
+
+    from app.blockchain.settlement import create_settlement_batch, submit_batch_onchain
+    from app.blockchain.bridge import process_pending_withdrawals
+
+    async with get_db_ctx() as db:
+        # Process pending withdrawals
+        try:
+            processed = await process_pending_withdrawals(db)
+            if processed:
+                logger.info("Processed %d bridge withdrawals", processed)
+        except Exception as e:
+            logger.error("Error processing withdrawals: %s", e)
+
+        # Create and submit settlement batch
+        try:
+            batch = await create_settlement_batch(
+                db, min_batch_size=config.settlement_min_batch_size
+            )
+            if batch:
+                try:
+                    result = await submit_batch_onchain(db, batch["batch_id"])
+                    logger.info("Settlement batch %s confirmed: %s",
+                                batch["batch_id"], result.get("onchain_tx_hash"))
+                except Exception as e:
+                    logger.warning("Settlement on-chain submission failed: %s", e)
+        except Exception as e:
+            logger.error("Error creating settlement batch: %s", e)
+
+
 async def cleanup_loop(interval_seconds: int = 300):
     """Run periodic cleanup tasks."""
     while True:
@@ -295,6 +329,7 @@ async def cleanup_loop(interval_seconds: int = 300):
             await distribute_weekly_rewards()
             await check_skill_publish_rewards()
             await auto_resolve_disputes()
+            await run_settlement()
         except Exception as e:
             logger.error("Error in cleanup loop: %s", e)
         await asyncio.sleep(interval_seconds)
