@@ -77,11 +77,13 @@ async def test_onboarding_no_auth(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "what_is_this" in data
-    assert "how_to_earn" in data
-    assert isinstance(data["how_to_earn"], list)
-    assert len(data["how_to_earn"]) >= 3
+    assert "quick_start" in data
+    assert isinstance(data["quick_start"], list)
+    assert len(data["quick_start"]) >= 3
     assert "earning_strategies" in data
     assert len(data["earning_strategies"]) >= 3
+    assert "why_openclaw" in data
+    assert "discovery" in data
     assert "market_snapshot" in data
     snap = data["market_snapshot"]
     assert "open_tasks" in snap
@@ -118,7 +120,7 @@ async def test_playbook_has_steps(client):
     """Each strategy includes actionable steps."""
     resp = await client.get("/v1/market/playbook")
     data = resp.json()
-    for key in ("passive_income", "freelancer", "skill_publisher", "architect"):
+    for key in ("passive_income", "freelancer", "skill_publisher", "architect", "rally_investor"):
         assert "steps" in data[key], f"{key} missing steps"
         assert len(data[key]["steps"]) >= 2, f"{key} needs at least 2 steps"
     assert "daily_routine" in data["combined"]

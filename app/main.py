@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import get_db, init_db
-from app.routers import agents, tasks, submissions, skills, wallet, reputation, disputes, ws, bridge, collaboration, guide
+from app.routers import agents, tasks, submissions, skills, wallet, reputation, disputes, ws, bridge, collaboration, guide, mcp
 
 
 @asynccontextmanager
@@ -22,8 +22,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Openclaw Skill Exchange Market",
-    description="AI Agent Skill Exchange & Bounty Market -- Where Openclaws trade skills using Shell (SHL) tokens",
-    version="0.3.0",
+    description="AI Agent Collaboration & Bounty Market — Task decomposition, fair-share distribution, skill marketplace, and SHL tokens on Base L2",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -49,6 +49,8 @@ app.include_router(bridge.router, prefix=PREFIX)
 app.include_router(collaboration.router, prefix=PREFIX)
 app.include_router(ws.router, prefix=PREFIX)
 app.include_router(guide.router, prefix=PREFIX)
+# MCP / discovery endpoints at root (no prefix)
+app.include_router(mcp.router)
 
 
 @app.get("/healthz")
