@@ -13,9 +13,17 @@ from alembic import context
 
 config = context.config
 
-# Override DB URL from env var if set (e.g. on Render)
-db_path = os.environ.get("MARKET_DB_PATH", "data/market.db")
-config.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+# Override DB URL from env var if set
+# PostgreSQL: MARKET_DATABASE_URL="postgresql://user:pass@host/db"
+# SQLite: MARKET_DB_PATH="data/market.db" (default)
+database_url = os.environ.get("MARKET_DATABASE_URL", "")
+if database_url:
+    # Strip asyncpg driver prefix for sync alembic
+    db_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    config.set_main_option("sqlalchemy.url", db_url)
+else:
+    db_path = os.environ.get("MARKET_DB_PATH", "data/market.db")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

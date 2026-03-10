@@ -188,6 +188,103 @@ async def fork_skill(db: aiosqlite.Connection, agent_id: str, skill_id: str) -> 
     )
 
 
+async def publish_new_version(db: aiosqlite.Connection, author_agent_id: str,
+                              skill_id: str, version: str,
+                              title: str | None = None,
+                              description: str | None = None,
+                              recipe: dict | None = None,
+                              tags: list[str] | None = None) -> dict:
+    """Publish a new version of an existing skill. Caller does db.commit()."""
+    import re
+    if not re.match(r"^\d+\.\d+\.\d+$", version):
+        raise ValueError("Version must be in X.Y.Z format")
+
+    original = await get_skill(db, skill_id)
+    if not original:
+        raise ValueError("Skill not found")
+    if original["author_agent_id"] != author_agent_id:
+        raise ValueError("Only the original author can publish new versions")
+
+    # Check duplicate version
+    cur = await db.execute(
+        "SELECT skill_id FROM skills WHERE name = ? AND author_agent_id = ? AND version = ?",
+        (original["name"], author_agent_id, version),
+    )
+    if await cur.fetchone():
+        raise ValueError(f"Version {version} already exists for this skill")
+
+    # Copy fields from original if not provided
+    orig_tags = original.get("tags", "[]")
+    if isinstance(orig_tags, str):
+        orig_tags = json.loads(orig_tags)
+    orig_recipe = original.get("recipe", "{}")
+    if isinstance(orig_recipe, str):
+        orig_recipe = json.loads(orig_recipe)
+
+    return await create_skill(
+        db, author_agent_id,
+        name=original["name"],
+        title=title or original["title"],
+        version=version,
+        description=description if description is not None else original.get("description"),
+        category=original.get("category", "general"),
+        tags=tags if tags is not None else orig_tags,
+        recipe=recipe if recipe is not None else orig_recipe,
+        is_public=bool(original.get("is_public", 1)),
+    )
+
+
+async def list_versions(db: aiosqlite.Connection, skill_id: str) -> list[dict]:
+    """List all versions of a skill (grouped by name + author)."""
+    skill = await get_skill(db, skill_id)
+    if not skill:
+        raise ValueError("Skill not found")
+
+    cur = await db.execute(
+        """SELECT * FROM skills
+           WHERE name = ? AND author_agent_id = ?
+           ORDER BY created_at DESC""",
+        (skill["name"], skill["author_agent_id"]),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_version(db: aiosqlite.Connection, skill_id: str, version: str) -> dict | None:
+    """Get a specific version of a skill."""
+    skill = await get_skill(db, skill_id)
+    if not skill:
+        return None
+
+    cur = await db.execute(
+        "SELECT * FROM skills WHERE name = ? AND author_agent_id = ? AND version = ?",
+        (skill["name"], skill["author_agent_id"], version),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def install_skill_version(db: aiosqlite.Connection, agent_id: str,
+                                 skill_id: str, version: str | None = None) -> dict:
+    """Install a specific version of a skill. If version is None, install latest."""
+    if version:
+        skill = await get_skill(db, skill_id)
+        if not skill:
+            raise ValueError("Skill not found")
+        # Find the specific version
+        cur = await db.execute(
+            "SELECT * FROM skills WHERE name = ? AND author_agent_id = ? AND version = ?",
+            (skill["name"], skill["author_agent_id"], version),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise ValueError(f"Version {version} not found")
+        target_id = row["skill_id"]
+    else:
+        target_id = skill_id
+
+    return await install_skill(db, agent_id, target_id)
+
+
 async def rate_skill(db: aiosqlite.Connection, agent_id: str, skill_id: str,
                      score: int, comment: str | None = None) -> dict:
     """Rate a skill. Updates avg_rating. Caller is responsible for db.commit()."""

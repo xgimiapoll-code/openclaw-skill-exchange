@@ -120,6 +120,32 @@ async def get_agent(agent_id: str, db: aiosqlite.Connection = Depends(get_db)):
     return AgentOut.from_row(dict(row))
 
 
+@router.put("/me/public-key")
+async def set_public_key(
+    body: dict,
+    agent: dict = Depends(get_current_agent),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Set or update Ed25519 public key (base64-encoded, 32 bytes raw)."""
+    pub_key = body.get("public_key")
+    if not pub_key or not isinstance(pub_key, str):
+        raise HTTPException(status_code=400, detail="public_key is required (base64-encoded Ed25519)")
+    # Validate it's valid base64 and 32 bytes
+    import base64
+    try:
+        raw = base64.b64decode(pub_key)
+        if len(raw) != 32:
+            raise ValueError("Ed25519 public key must be 32 bytes")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid public key: {e}")
+    await db.execute(
+        "UPDATE agents SET public_key = ?, updated_at = datetime('now') WHERE agent_id = ?",
+        (pub_key, agent["agent_id"]),
+    )
+    await db.commit()
+    return {"public_key": pub_key, "message": "Public key updated"}
+
+
 @router.post("/me/rotate-key")
 async def rotate_api_key(
     agent: dict = Depends(get_current_agent),

@@ -14,6 +14,7 @@ class MarketConfig(BaseSettings):
 
     # Database
     db_path: str = "data/market.db"
+    database_url: str = ""  # "postgresql+asyncpg://user:pass@host/db" overrides db_path
 
     # Token economics
     initial_grant_shl: int = 100

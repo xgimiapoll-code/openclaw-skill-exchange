@@ -1,4 +1,9 @@
-"""SQLite database connection management with WAL mode."""
+"""Database connection management — supports SQLite (default) and PostgreSQL.
+
+Backend selection:
+  - Set MARKET_DATABASE_URL="postgresql+asyncpg://..." for PostgreSQL
+  - Default: SQLite at MARKET_DB_PATH (data/market.db)
+"""
 
 import aiosqlite
 import os
@@ -7,14 +12,19 @@ from contextlib import asynccontextmanager
 from app.config import config
 
 _DB_PATH = config.db_path
+_DATABASE_URL = config.database_url
+_IS_PG = _DATABASE_URL.startswith("postgresql") if _DATABASE_URL else False
 
 
 def _ensure_dir():
-    os.makedirs(os.path.dirname(os.path.abspath(_DB_PATH)), exist_ok=True)
+    if not _IS_PG:
+        os.makedirs(os.path.dirname(os.path.abspath(_DB_PATH)), exist_ok=True)
 
 
-async def get_db() -> aiosqlite.Connection:
-    """Get a database connection (for FastAPI Depends)."""
+# ── SQLite connections (default) ──
+
+async def get_db():
+    """Get a database connection (for FastAPI Depends). SQLite backend."""
     _ensure_dir()
     db = await aiosqlite.connect(_DB_PATH)
     db.row_factory = aiosqlite.Row
@@ -41,6 +51,117 @@ async def get_db_ctx():
     finally:
         await db.close()
 
+
+# ── PostgreSQL connections (optional) ──
+
+_pg_pool = None
+
+
+async def _get_pg_pool():
+    """Lazy-init asyncpg connection pool."""
+    global _pg_pool
+    if _pg_pool is None:
+        import asyncpg
+        # Strip the "postgresql+asyncpg://" scheme prefix to get raw DSN
+        dsn = _DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+        _pg_pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
+    return _pg_pool
+
+
+class PgConnectionWrapper:
+    """Wraps asyncpg connection to provide aiosqlite-compatible interface.
+
+    Maps execute/fetchone/fetchall to asyncpg equivalents so existing
+    code works with minimal changes.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute(self, query: str, params=None):
+        query = _sqlite_to_pg(query)
+        if params:
+            query, params = _positional_to_dollar(query, params)
+            result = await self._conn.fetch(query, *params)
+        else:
+            result = await self._conn.fetch(query)
+        return PgCursorWrapper(result)
+
+    async def executescript(self, script: str):
+        await self._conn.execute(script)
+
+    async def commit(self):
+        pass  # autocommit in asyncpg
+
+    async def close(self):
+        await self._conn.close()
+
+
+class PgCursorWrapper:
+    """Wraps asyncpg result to provide fetchone/fetchall interface."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def fetchone(self):
+        if self._rows:
+            return dict(self._rows[0])
+        return None
+
+    async def fetchall(self):
+        return [dict(r) for r in self._rows]
+
+
+def _sqlite_to_pg(query: str) -> str:
+    """Basic SQLite → PostgreSQL query translation for common patterns."""
+    import re
+    q = query
+    q = q.replace("datetime('now')", "NOW()")
+    q = q.replace("date('now')", "CURRENT_DATE")
+    q = re.sub(r"datetime\('now',\s*'(-?\d+)\s+(hour|day|minute)s?'\)",
+               r"NOW() + INTERVAL '\1 \2'", q)
+    return q
+
+
+def _positional_to_dollar(query: str, params: tuple) -> tuple[str, list]:
+    """Convert ? placeholders to $1, $2, ... for asyncpg."""
+    parts = query.split("?")
+    result = parts[0]
+    for i, part in enumerate(parts[1:], 1):
+        result += f"${i}" + part
+    return result, list(params)
+
+
+async def get_db_pg():
+    """Get a PostgreSQL connection (for FastAPI Depends)."""
+    pool = await _get_pg_pool()
+    conn = await pool.acquire()
+    wrapper = PgConnectionWrapper(conn)
+    try:
+        yield wrapper
+    finally:
+        await pool.release(conn)
+
+
+@asynccontextmanager
+async def get_db_ctx_pg():
+    """PostgreSQL context manager for background tasks."""
+    pool = await _get_pg_pool()
+    conn = await pool.acquire()
+    try:
+        yield PgConnectionWrapper(conn)
+    finally:
+        await pool.release(conn)
+
+
+# ── Backend selection ──
+# When PostgreSQL is configured, override get_db/get_db_ctx
+if _IS_PG:
+    get_db = get_db_pg  # type: ignore
+    get_db_ctx = get_db_ctx_pg  # type: ignore
+
+
+# ── Schema ──
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS agents (
@@ -348,9 +469,28 @@ CREATE INDEX IF NOT EXISTS idx_settlement_batches_status ON settlement_batches(s
 
 async def init_db():
     """Initialize database schema."""
+    if _IS_PG:
+        await _init_db_pg()
+    else:
+        await _init_db_sqlite()
+
+
+async def _init_db_sqlite():
     _ensure_dir()
     async with aiosqlite.connect(_DB_PATH) as db:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA foreign_keys=ON")
         await db.executescript(SCHEMA_SQL)
         await db.commit()
+
+
+async def _init_db_pg():
+    """Initialize PostgreSQL schema using translated SQL."""
+    import re
+    pool = await _get_pg_pool()
+    schema = SCHEMA_SQL
+    # Translate SQLite defaults to PostgreSQL
+    schema = schema.replace("datetime('now')", "NOW()")
+    schema = schema.replace("INTEGER DEFAULT 1", "INTEGER DEFAULT 1")  # compatible
+    async with pool.acquire() as conn:
+        await conn.execute(schema)

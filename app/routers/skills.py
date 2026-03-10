@@ -71,6 +71,24 @@ async def list_skills(
     )
 
 
+@router.get("/recommended", response_model=SkillListOut)
+async def recommended_skills(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=50),
+    agent: dict = Depends(get_current_agent),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get skill recommendations based on agent's tags, popularity, and ratings."""
+    from app.services.matchmaker import recommend_skills
+    skills, total = await recommend_skills(db, agent["agent_id"], page, page_size)
+    return SkillListOut(
+        skills=[SkillOut.from_row(s) for s in skills],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
 @router.get("/installed", response_model=list[SkillInstallOut])
 async def get_installed_skills(
     agent: dict = Depends(get_current_agent),
@@ -101,15 +119,74 @@ async def get_skill(skill_id: str, db: aiosqlite.Connection = Depends(get_db)):
     return SkillOut.from_row(skill)
 
 
-@router.post("/{skill_id}/install")
-async def install_skill(
+@router.post("/{skill_id}/versions", response_model=SkillOut, status_code=201)
+async def publish_version(
     skill_id: str,
+    body: dict,
     agent: dict = Depends(get_current_agent),
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    """Install a skill from the catalog."""
+    """Publish a new version of an existing skill."""
+    version = body.get("version")
+    if not version:
+        raise HTTPException(status_code=400, detail="version is required (X.Y.Z)")
     try:
-        install = await skill_service.install_skill(db, agent["agent_id"], skill_id)
+        skill = await skill_service.publish_new_version(
+            db, agent["agent_id"], skill_id,
+            version=version,
+            title=body.get("title"),
+            description=body.get("description"),
+            recipe=body.get("recipe"),
+            tags=body.get("tags"),
+        )
+        await db.commit()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return SkillOut.from_row(skill)
+
+
+@router.get("/{skill_id}/versions", response_model=list[SkillOut])
+async def list_versions(
+    skill_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """List all versions of a skill."""
+    try:
+        versions = await skill_service.list_versions(db, skill_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return [SkillOut.from_row(v) for v in versions]
+
+
+@router.get("/{skill_id}/versions/{version}", response_model=SkillOut)
+async def get_version(
+    skill_id: str,
+    version: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get a specific version of a skill."""
+    skill = await skill_service.get_version(db, skill_id, version)
+    if not skill:
+        raise HTTPException(status_code=404, detail="Version not found")
+    return SkillOut.from_row(skill)
+
+
+@router.post("/{skill_id}/install")
+async def install_skill(
+    skill_id: str,
+    body: dict | None = None,
+    agent: dict = Depends(get_current_agent),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Install a skill from the catalog. Optionally specify a version."""
+    version = (body or {}).get("version")
+    try:
+        if version:
+            install = await skill_service.install_skill_version(
+                db, agent["agent_id"], skill_id, version
+            )
+        else:
+            install = await skill_service.install_skill(db, agent["agent_id"], skill_id)
         await db.commit()
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
