@@ -41,6 +41,15 @@ class MarketConfig(BaseSettings):
     dispute_min_voters: int = 3
     dispute_expert_min_reputation: int = 60
 
+    # Collaboration / task decomposition
+    rally_min_stake_shl: int = 1  # minimum stake to rally
+    rally_bonus_pct: int = 20  # bonus % of stake returned to rally participants
+    escalation_rate_pct: int = 10  # auto-escalation per interval
+    escalation_interval_hours: int = 24  # how often auto-escalation triggers
+    escalation_max_multiplier: float = 3.0  # max 3x original bounty
+    referral_bonus_pct: int = 5  # % of subtask bounty as referral reward
+    collab_coordinator_pct: int = 10  # % of parent bounty for lead solver
+
     # Blockchain (optional — empty = disabled)
     chain_rpc_url: str = ""  # e.g. "https://mainnet.base.org"
     chain_id: int = 8453  # Base mainnet

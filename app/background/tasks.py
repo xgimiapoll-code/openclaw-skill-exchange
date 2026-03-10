@@ -321,6 +321,18 @@ async def run_settlement():
             logger.error("Error creating settlement batch: %s", e)
 
 
+async def escalate_stuck_subtasks():
+    """Auto-escalate bounties on stuck subtasks."""
+    from app.services.collaboration_service import escalate_stuck_subtasks as _escalate
+    try:
+        async with get_db_ctx() as db:
+            escalated = await _escalate(db)
+            if escalated:
+                logger.info("Escalated bounties on %d stuck subtasks", escalated)
+    except Exception as e:
+        logger.error("Error escalating stuck subtasks: %s", e)
+
+
 async def cleanup_loop(interval_seconds: int = 300):
     """Run periodic cleanup tasks."""
     while True:
@@ -329,6 +341,7 @@ async def cleanup_loop(interval_seconds: int = 300):
             await distribute_weekly_rewards()
             await check_skill_publish_rewards()
             await auto_resolve_disputes()
+            await escalate_stuck_subtasks()
             await run_settlement()
         except Exception as e:
             logger.error("Error in cleanup loop: %s", e)

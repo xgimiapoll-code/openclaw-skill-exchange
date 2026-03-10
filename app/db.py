@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS transactions (
     tx_type TEXT NOT NULL CHECK(tx_type IN (
         'mint','bounty_lock','bounty_release','bounty_refund',
         'reward','penalty','faucet','burn','claim_deposit','claim_refund',
-        'activity_reward','skill_reward'
+        'activity_reward','skill_reward',
+        'rally_stake','rally_refund','rally_bonus','referral_reward','escalation_mint'
     )),
     reference_id TEXT,
     reference_type TEXT,
@@ -105,6 +106,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     deadline TEXT,
     winning_submission_id TEXT,
     context TEXT DEFAULT '{}',
+    -- Collaboration / decomposition fields
+    parent_task_id TEXT REFERENCES tasks(task_id),
+    task_type TEXT DEFAULT 'standalone' CHECK(task_type IN ('standalone','parent','subtask')),
+    weight_pct INTEGER DEFAULT 100 CHECK(weight_pct >= 0 AND weight_pct <= 100),
+    sequence_order INTEGER DEFAULT 0,
+    base_bounty_amount INTEGER,
+    escalation_level REAL DEFAULT 1.0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -214,6 +222,31 @@ CREATE TABLE IF NOT EXISTS dispute_votes (
     UNIQUE(dispute_id, voter_agent_id)
 );
 
+CREATE TABLE IF NOT EXISTS task_rallies (
+    rally_id TEXT PRIMARY KEY,
+    parent_task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    target_subtask_id TEXT NOT NULL REFERENCES tasks(task_id),
+    supporter_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    stake_amount INTEGER NOT NULL CHECK(stake_amount > 0),
+    stake_tx_id TEXT REFERENCES transactions(tx_id),
+    status TEXT DEFAULT 'active' CHECK(status IN ('active','refunded','rewarded')),
+    message TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(target_subtask_id, supporter_agent_id)
+);
+
+CREATE TABLE IF NOT EXISTS task_referrals (
+    referral_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    referrer_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    referred_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    reward_amount INTEGER DEFAULT 0,
+    reward_tx_id TEXT REFERENCES transactions(tx_id),
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','claimed','rewarded','expired')),
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(task_id, referrer_agent_id, referred_agent_id)
+);
+
 CREATE TABLE IF NOT EXISTS bridge_requests (
     request_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(agent_id),
@@ -263,6 +296,13 @@ CREATE INDEX IF NOT EXISTS idx_ratings_ratee ON ratings(ratee_agent_id);
 CREATE INDEX IF NOT EXISTS idx_disputes_task ON disputes(task_id);
 CREATE INDEX IF NOT EXISTS idx_disputes_status ON disputes(status);
 CREATE INDEX IF NOT EXISTS idx_dispute_votes_dispute ON dispute_votes(dispute_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type);
+CREATE INDEX IF NOT EXISTS idx_rallies_parent ON task_rallies(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_rallies_target ON task_rallies(target_subtask_id);
+CREATE INDEX IF NOT EXISTS idx_rallies_supporter ON task_rallies(supporter_agent_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_task ON task_referrals(task_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON task_referrals(referrer_agent_id);
 CREATE INDEX IF NOT EXISTS idx_bridge_requests_agent ON bridge_requests(agent_id);
 CREATE INDEX IF NOT EXISTS idx_bridge_requests_status ON bridge_requests(status);
 CREATE INDEX IF NOT EXISTS idx_transactions_batch ON transactions(settlement_batch_id);

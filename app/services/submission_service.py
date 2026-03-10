@@ -118,7 +118,7 @@ async def complete_task_with_winner(
     if solver_agent and solver_agent["reputation_score"] >= config.master_reputation_threshold:
         effective_bonus_pct += config.master_bonus_pct
 
-    return {
+    result = {
         "task_id": task_id,
         "winning_submission_id": submission["submission_id"],
         "solver_agent_id": submission["solver_agent_id"],
@@ -128,3 +128,12 @@ async def complete_task_with_winner(
         "release_tx_id": release_tx,
         "bonus_tx_id": bonus_tx,
     }
+
+    # If this is a subtask, check if parent task is fully complete
+    if task.get("task_type") == "subtask" and task.get("parent_task_id"):
+        from app.services.collaboration_service import check_and_release_parent
+        release = await check_and_release_parent(db, task["parent_task_id"])
+        if release:
+            result["parent_release"] = release
+
+    return result

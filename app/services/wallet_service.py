@@ -329,3 +329,123 @@ async def grant_skill_reward(db: aiosqlite.Connection, agent_id: str, skill_id: 
         await db.execute("ROLLBACK TO SAVEPOINT sp_skill_reward")
         raise
     return tx_id
+
+
+async def lock_rally_stake(db: aiosqlite.Connection, agent_id: str, amount_shl: int, subtask_id: str) -> str:
+    """Lock SHL as rally stake to boost a stuck subtask. Returns tx_id."""
+    amount = shl_to_micro(amount_shl)
+    wallet = await get_wallet(db, agent_id)
+    if not wallet:
+        raise ValueError("Wallet not found")
+    if wallet["balance"] < amount:
+        raise ValueError("Insufficient balance for rally stake")
+
+    await db.execute("SAVEPOINT sp_rally_stake")
+    try:
+        await db.execute(
+            "UPDATE wallets SET balance = balance - ?, frozen_balance = frozen_balance + ? WHERE agent_id = ?",
+            (amount, amount, agent_id),
+        )
+        tx_id = str(uuid.uuid4())
+        await db.execute(
+            """INSERT INTO transactions (tx_id, from_wallet_id, amount, tx_type, reference_id, reference_type, memo)
+               VALUES (?, ?, ?, 'rally_stake', ?, 'subtask', 'Rally stake for stuck subtask')""",
+            (tx_id, wallet["wallet_id"], amount, subtask_id),
+        )
+        await db.execute("RELEASE SAVEPOINT sp_rally_stake")
+    except Exception:
+        await db.execute("ROLLBACK TO SAVEPOINT sp_rally_stake")
+        raise
+    return tx_id
+
+
+async def refund_rally_stake(db: aiosqlite.Connection, agent_id: str, amount_micro: int, subtask_id: str) -> str:
+    """Refund rally stake (amount in micro). Returns tx_id."""
+    wallet = await get_wallet(db, agent_id)
+    if not wallet:
+        raise ValueError("Wallet not found")
+
+    await db.execute("SAVEPOINT sp_rally_refund")
+    try:
+        await db.execute(
+            "UPDATE wallets SET frozen_balance = frozen_balance - ?, balance = balance + ? WHERE agent_id = ?",
+            (amount_micro, amount_micro, agent_id),
+        )
+        tx_id = str(uuid.uuid4())
+        await db.execute(
+            """INSERT INTO transactions (tx_id, to_wallet_id, amount, tx_type, reference_id, reference_type, memo)
+               VALUES (?, ?, ?, 'rally_refund', ?, 'subtask', 'Rally stake returned')""",
+            (tx_id, wallet["wallet_id"], amount_micro, subtask_id),
+        )
+        await db.execute("RELEASE SAVEPOINT sp_rally_refund")
+    except Exception:
+        await db.execute("ROLLBACK TO SAVEPOINT sp_rally_refund")
+        raise
+    return tx_id
+
+
+async def grant_rally_bonus(db: aiosqlite.Connection, agent_id: str, amount_micro: int, subtask_id: str) -> str:
+    """Mint rally bonus for participants. Returns tx_id."""
+    wallet = await get_wallet(db, agent_id)
+    if not wallet:
+        raise ValueError("Wallet not found")
+
+    await db.execute("SAVEPOINT sp_rally_bonus")
+    try:
+        await db.execute(
+            "UPDATE wallets SET balance = balance + ?, lifetime_earned = lifetime_earned + ? WHERE agent_id = ?",
+            (amount_micro, amount_micro, agent_id),
+        )
+        tx_id = str(uuid.uuid4())
+        await db.execute(
+            """INSERT INTO transactions (tx_id, to_wallet_id, amount, tx_type, reference_id, reference_type, memo)
+               VALUES (?, ?, ?, 'rally_bonus', ?, 'subtask', 'Rally participation bonus')""",
+            (tx_id, wallet["wallet_id"], amount_micro, subtask_id),
+        )
+        await db.execute("RELEASE SAVEPOINT sp_rally_bonus")
+    except Exception:
+        await db.execute("ROLLBACK TO SAVEPOINT sp_rally_bonus")
+        raise
+    return tx_id
+
+
+async def grant_referral_reward(db: aiosqlite.Connection, agent_id: str, amount_micro: int, task_id: str) -> str:
+    """Mint referral reward. Returns tx_id."""
+    wallet = await get_wallet(db, agent_id)
+    if not wallet:
+        raise ValueError("Wallet not found")
+
+    await db.execute("SAVEPOINT sp_referral")
+    try:
+        await db.execute(
+            "UPDATE wallets SET balance = balance + ?, lifetime_earned = lifetime_earned + ? WHERE agent_id = ?",
+            (amount_micro, amount_micro, agent_id),
+        )
+        tx_id = str(uuid.uuid4())
+        await db.execute(
+            """INSERT INTO transactions (tx_id, to_wallet_id, amount, tx_type, reference_id, reference_type, memo)
+               VALUES (?, ?, ?, 'referral_reward', ?, 'task', 'Referral recruitment reward')""",
+            (tx_id, wallet["wallet_id"], amount_micro, task_id),
+        )
+        await db.execute("RELEASE SAVEPOINT sp_referral")
+    except Exception:
+        await db.execute("ROLLBACK TO SAVEPOINT sp_referral")
+        raise
+    return tx_id
+
+
+async def mint_escalation(db: aiosqlite.Connection, task_id: str, amount_micro: int) -> str:
+    """Mint SHL for bounty escalation (system-level injection). Returns tx_id."""
+    await db.execute("SAVEPOINT sp_escalation")
+    try:
+        tx_id = str(uuid.uuid4())
+        await db.execute(
+            """INSERT INTO transactions (tx_id, amount, tx_type, reference_id, reference_type, memo)
+               VALUES (?, ?, 'escalation_mint', ?, 'task', 'Auto-escalation bounty increase')""",
+            (tx_id, amount_micro, task_id),
+        )
+        await db.execute("RELEASE SAVEPOINT sp_escalation")
+    except Exception:
+        await db.execute("ROLLBACK TO SAVEPOINT sp_escalation")
+        raise
+    return tx_id
