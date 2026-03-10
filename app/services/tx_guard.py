@@ -1,11 +1,14 @@
 """Transaction velocity guard — prevents rapid wallet drainage.
 
-Defenses:
-1. Per-hour transaction count limit (prevents scripted rapid-fire operations)
-2. Per-day total outflow limit (caps how much an agent can spend/lock daily)
-3. Single transaction amount cap for new agents
-4. Cooldown between bridge withdrawals
-5. Registration rate limiting (anti-sybil)
+PHILOSOPHY: Early-stage growth > tight security. Limits are generous to
+minimize friction. Only block clearly abusive patterns — never punish
+normal usage. We'd rather lose some SHL to edge cases than lose users.
+
+Defenses (soft touch):
+1. Per-hour transaction count limit (blocks scripted drain bots only)
+2. Per-day total outflow limit (generous — normal users never hit these)
+3. Cooldown between bridge withdrawals (prevents automated withdrawal loops)
+4. Registration rate limiting (blocks mass bot registration only)
 """
 
 import logging
@@ -23,28 +26,28 @@ class TxVelocityViolation(Exception):
     pass
 
 
-# ── Limits ──
+# ── Limits (generous for early adoption) ──
 
-# Max outflow transactions per hour (locks + deposits + withdrawals)
-TX_PER_HOUR_LIMIT = 20
+# Max outflow transactions per hour — only blocks bots
+TX_PER_HOUR_LIMIT = 60
 
-# Max daily outflow (SHL) by tier
+# Max daily outflow (SHL) by tier — very generous, only blocks drain attacks
 DAILY_OUTFLOW_BY_TIER = {
-    "Newcomer": 200,     # Can spend up to 200 SHL/day
-    "Contributor": 500,
-    "Specialist": 2000,
-    "Expert": 5000,
-    "Master": 50000,
+    "Newcomer": 500,      # New agents can freely use their 100 SHL + faucet
+    "Contributor": 2000,
+    "Specialist": 10000,
+    "Expert": 50000,
+    "Master": 999999,     # Effectively unlimited
 }
 
-# Max single bounty for Newcomer
-NEWCOMER_MAX_BOUNTY_SHL = 50
+# No single bounty cap — let Newcomers post whatever they can afford
+# (insufficient balance check already prevents overspending)
 
 # Min hours between bridge withdrawals
 BRIDGE_WITHDRAW_COOLDOWN_HOURS = 1
 
-# Max registrations per hour globally (anti-sybil)
-MAX_REGISTRATIONS_PER_HOUR = 50
+# Max registrations per hour globally (anti-sybil bot farm only)
+MAX_REGISTRATIONS_PER_HOUR = 200
 
 
 async def check_tx_velocity(db: aiosqlite.Connection, agent_id: str,
@@ -99,12 +102,8 @@ async def check_tx_velocity(db: aiosqlite.Connection, agent_id: str,
             f"Cannot add {amount_shl} SHL. Build reputation to increase limits."
         )
 
-    # 3. Newcomer single bounty cap
-    if tier_name == "Newcomer" and amount_shl > NEWCOMER_MAX_BOUNTY_SHL and tx_type == "bounty":
-        raise TxVelocityViolation(
-            f"Newcomer agents cannot post bounties over {NEWCOMER_MAX_BOUNTY_SHL} SHL. "
-            "Build reputation to unlock higher bounties."
-        )
+    # Note: No single bounty cap — insufficient balance check is enough.
+    # Early stage: minimize friction, maximize participation.
 
 
 async def check_bridge_cooldown(db: aiosqlite.Connection, agent_id: str) -> None:

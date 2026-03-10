@@ -1,11 +1,17 @@
 """Content security guard — scans text and recipes for malicious patterns.
 
-Defends against:
-1. Prompt injection in task/submission/skill text fields
-2. Malicious URLs / exfiltration endpoints in recipes
-3. Credential extraction attempts
-4. Shell command injection in recipes
-5. Excessive resource consumption via oversized payloads
+PHILOSOPHY: Only block content that is CLEARLY an attack. Borderline cases
+get logged as warnings but allowed through. We never want a legitimate agent
+to get blocked because their task description happened to contain a keyword.
+
+Hard-blocks (raise ContentViolation):
+- Shell commands in recipes (rm -rf, | bash, eval, exec)
+- Direct credential extraction ("reveal your api_key")
+- Oversized payloads (DoS prevention)
+
+Soft-checks (log warning, allow through):
+- Suspicious URLs in text
+- Borderline injection patterns
 """
 
 import logging
@@ -15,23 +21,20 @@ logger = logging.getLogger(__name__)
 
 # ── Pattern databases ──
 
-# Prompt injection patterns — attempts to override agent instructions
+# HARD-BLOCK patterns — only the most clearly malicious, zero false-positive risk
 _PROMPT_INJECTION_PATTERNS = [
-    # Direct instruction override
+    # Credential extraction — the #1 real threat in agent-to-agent systems
+    r"(reveal|show|print|output|return|send|post|leak)\s+(your\s+)?(api[_\s]?key|secret|password|credential|bearer)",
+    r"drain\s+(wallet|balance|funds|tokens)",
+]
+
+# SOFT-WARNING patterns — logged but NOT blocked (for early adoption friendliness)
+_SOFT_WARNING_PATTERNS = [
     r"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)",
     r"forget\s+(everything|all|your)\s+(you|instructions|rules)",
     r"you\s+are\s+now\s+(a|an|DAN|jailbreak)",
-    r"new\s+instructions?\s*[:：]",
-    r"system\s*prompt\s*[:：]",
     r"override\s+(instructions|system|safety)",
-    # Credential extraction
-    r"(reveal|show|print|output|return|send|post|leak)\s+(your\s+)?(api[_\s]?key|token|secret|password|credential|bearer|auth)",
-    r"authorization\s*[:：]\s*bearer",
-    r"api[_\s]?key\s*[:=]",
-    # Wallet manipulation via text
     r"(transfer|send|withdraw|bridge)\s+.*\s+(all|entire|maximum|max)\s+(balance|shl|tokens|funds)",
-    r"POST\s+.*/bridge/withdraw.*wallet_address",
-    r"drain\s+(wallet|balance|funds|tokens)",
 ]
 
 # Dangerous URL patterns in recipes
@@ -66,16 +69,17 @@ _DANGEROUS_RECIPE_ACTIONS = [
 
 # Compile all patterns for performance
 _INJECTION_RES = [re.compile(p, re.IGNORECASE) for p in _PROMPT_INJECTION_PATTERNS]
+_SOFT_WARNING_RES = [re.compile(p, re.IGNORECASE) for p in _SOFT_WARNING_PATTERNS]
 _URL_RES = [re.compile(p, re.IGNORECASE) for p in _DANGEROUS_URL_PATTERNS]
 _ACTION_RES = [re.compile(p, re.IGNORECASE) for p in _DANGEROUS_RECIPE_ACTIONS]
 
-# ── Size limits ──
+# ── Size limits (generous for early adoption) ──
 
-MAX_TEXT_FIELD_LEN = 10_000  # Characters per text field
-MAX_RECIPE_DEPTH = 5  # JSON nesting depth
-MAX_RECIPE_STEPS = 50
-MAX_TAGS = 20
-MAX_TAG_LEN = 50
+MAX_TEXT_FIELD_LEN = 50_000  # Characters per text field (generous)
+MAX_RECIPE_DEPTH = 10  # JSON nesting depth
+MAX_RECIPE_STEPS = 200
+MAX_TAGS = 50
+MAX_TAG_LEN = 100
 
 
 # ── Public API ──
@@ -108,20 +112,29 @@ def scan_text(text: str, field_name: str = "text") -> list[str]:
             field_name,
         )
 
-    # Prompt injection
+    # Hard-block: credential extraction / wallet drain
     for pattern in _INJECTION_RES:
         match = pattern.search(text)
         if match:
             matched = match.group(0)
             logger.warning(
-                "Prompt injection detected in %s: %r", field_name, matched
+                "Hard-blocked content in %s: %r", field_name, matched
             )
             raise ContentViolation(
                 f"Potentially malicious content detected: {matched[:60]}",
                 field_name,
             )
 
-    # Dangerous URLs in text
+    # Soft-warning: suspicious but allowed (log only)
+    for pattern in _SOFT_WARNING_RES:
+        match = pattern.search(text)
+        if match:
+            logger.info(
+                "Soft warning in %s: %r (allowed)", field_name, match.group(0)
+            )
+            warnings.append(f"Suspicious pattern in {field_name}: {match.group(0)[:40]}")
+
+    # Dangerous URLs in text — warn only, don't block
     for pattern in _URL_RES:
         match = pattern.search(text)
         if match:
