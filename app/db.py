@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     sequence_order INTEGER DEFAULT 0,
     base_bounty_amount INTEGER,
     escalation_level REAL DEFAULT 1.0,
+    first_claimed_at TEXT,
+    failed_claim_count INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -222,6 +224,35 @@ CREATE TABLE IF NOT EXISTS dispute_votes (
     UNIQUE(dispute_id, voter_agent_id)
 );
 
+CREATE TABLE IF NOT EXISTS decomposition_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    parent_task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    proposer_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    subtasks_json TEXT NOT NULL,
+    status TEXT DEFAULT 'proposed' CHECK(status IN ('proposed','active','rejected')),
+    endorsement_score REAL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS proposal_endorsements (
+    endorsement_id TEXT PRIMARY KEY,
+    proposal_id TEXT NOT NULL REFERENCES decomposition_proposals(proposal_id),
+    agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(proposal_id, agent_id)
+);
+
+CREATE TABLE IF NOT EXISTS cross_reviews (
+    review_id TEXT PRIMARY KEY,
+    parent_task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    reviewer_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    reviewed_subtask_id TEXT NOT NULL REFERENCES tasks(task_id),
+    score INTEGER NOT NULL CHECK(score >= 1 AND score <= 5),
+    comment TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(reviewer_agent_id, reviewed_subtask_id)
+);
+
 CREATE TABLE IF NOT EXISTS task_rallies (
     rally_id TEXT PRIMARY KEY,
     parent_task_id TEXT NOT NULL REFERENCES tasks(task_id),
@@ -296,6 +327,11 @@ CREATE INDEX IF NOT EXISTS idx_ratings_ratee ON ratings(ratee_agent_id);
 CREATE INDEX IF NOT EXISTS idx_disputes_task ON disputes(task_id);
 CREATE INDEX IF NOT EXISTS idx_disputes_status ON disputes(status);
 CREATE INDEX IF NOT EXISTS idx_dispute_votes_dispute ON dispute_votes(dispute_id);
+CREATE INDEX IF NOT EXISTS idx_proposals_parent ON decomposition_proposals(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON decomposition_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_endorsements_proposal ON proposal_endorsements(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_cross_reviews_parent ON cross_reviews(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_cross_reviews_subtask ON cross_reviews(reviewed_subtask_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type);
 CREATE INDEX IF NOT EXISTS idx_rallies_parent ON task_rallies(parent_task_id);

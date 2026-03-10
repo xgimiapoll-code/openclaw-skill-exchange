@@ -1,12 +1,25 @@
-"""Collaboration service — task decomposition, rally, escalation, collective release.
+"""Collaboration service — decentralized decomposition, rally, fair-share release.
 
-Core mechanism: "Rally" (集结号)
-- Parent task is split into subtasks; bounties are held in collective escrow
-- Nobody gets paid until ALL subtasks complete
-- Completed subtask solvers can "rally" by staking part of their pending reward
-  to boost stuck subtasks, creating a viral recruitment effect
-- Auto-escalation increases bounty on stuck subtasks over time
-- When all subtasks complete, rewards release to everyone simultaneously
+Two core decentralization mechanisms:
+
+1. DECOMPOSITION — anyone proposes, community endorses, market decides:
+   - Anyone (not just the poster) can propose how to split a task
+   - Other agents endorse proposals (weighted by reputation)
+   - A proposal activates when it reaches the endorsement threshold
+   - Poster can also directly approve any proposal
+   - Proposer gets a small architect reward when parent completes
+
+2. DISTRIBUTION — algorithmic, nobody decides:
+   - Bounty shares computed by fair_share algorithm at release time
+   - Signals: difficulty (market), quality (peer review), scarcity (supply),
+     dependency (structure)
+   - No fixed weight_pct — weight_pct is only a hint, actual payout is algorithmic
+   - Cross-reviews by sibling solvers feed the quality signal
+
+Combined with the Rally mechanism:
+   - Nobody gets paid until ALL subtasks complete
+   - Completed solvers stake SHL to boost stuck subtask bounties
+   - Auto-escalation + viral referral
 """
 
 import json
@@ -19,53 +32,183 @@ import aiosqlite
 from app.config import config
 from app.models.schemas import shl_to_micro, micro_to_shl
 from app.services import wallet_service
+from app.services.fair_share import compute_fair_shares
 
 
-# ── Task Decomposition ──
+# ── Proposal-Based Decomposition ──
 
 
-async def decompose_task(
+async def propose_decomposition(
     db: aiosqlite.Connection,
     parent_task_id: str,
-    poster_agent_id: str,
+    proposer_agent_id: str,
     subtasks: list[dict],
-) -> list[dict]:
-    """Split a parent task into subtasks.
+) -> dict:
+    """Anyone can propose how to decompose a task.
 
-    Each subtask dict: {title, description, weight_pct, tags?, difficulty?, sequence_order?}
-    Total weight_pct must be <= 100. Remainder goes to coordinator reserve.
+    Each subtask dict: {title, description, tags?, difficulty?, sequence_order?}
+    No weight_pct needed — fair share algorithm computes distribution at release time.
 
-    The parent task's bounty is distributed among subtasks by weight.
-    Returns list of created subtask dicts.
+    Returns the proposal dict. It needs endorsements to activate.
     """
-    # Validate parent task
     cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (parent_task_id,))
     parent = await cur.fetchone()
     if not parent:
         raise ValueError("Parent task not found")
     parent = dict(parent)
 
-    if parent["poster_agent_id"] != poster_agent_id:
-        raise ValueError("Only poster can decompose task")
     if parent["task_type"] == "subtask":
         raise ValueError("Cannot decompose a subtask")
     if parent["status"] != "open":
         raise ValueError("Can only decompose open tasks")
 
-    # Check no existing subtasks
+    # Check no active decomposition already
     cur = await db.execute(
-        "SELECT COUNT(*) as cnt FROM tasks WHERE parent_task_id = ?", (parent_task_id,)
+        "SELECT proposal_id FROM decomposition_proposals WHERE parent_task_id = ? AND status = 'active'",
+        (parent_task_id,),
     )
-    if (await cur.fetchone())["cnt"] > 0:
-        raise ValueError("Task already decomposed")
+    if await cur.fetchone():
+        raise ValueError("Task already has an active decomposition")
 
-    if not subtasks:
-        raise ValueError("At least one subtask required")
+    if not subtasks or len(subtasks) < 2:
+        raise ValueError("At least 2 subtasks required")
 
-    # Validate total weight
-    total_weight = sum(s.get("weight_pct", 0) for s in subtasks)
-    if total_weight > 100:
-        raise ValueError(f"Total weight {total_weight}% exceeds 100%")
+    proposal_id = str(uuid.uuid4())
+    await db.execute(
+        """INSERT INTO decomposition_proposals
+           (proposal_id, parent_task_id, proposer_agent_id, subtasks_json)
+           VALUES (?, ?, ?, ?)""",
+        (proposal_id, parent_task_id, proposer_agent_id, json.dumps(subtasks)),
+    )
+
+    # Auto-endorse by proposer
+    endorsement_id = str(uuid.uuid4())
+    # Get proposer reputation for weighted score
+    cur = await db.execute(
+        "SELECT reputation_score FROM agents WHERE agent_id = ?", (proposer_agent_id,)
+    )
+    agent = await cur.fetchone()
+    rep = agent["reputation_score"] if agent else 0
+    weight = max(1.0, rep / 20)  # reputation → endorsement weight
+
+    await db.execute(
+        "INSERT INTO proposal_endorsements (endorsement_id, proposal_id, agent_id) VALUES (?, ?, ?)",
+        (endorsement_id, proposal_id, proposer_agent_id),
+    )
+    await db.execute(
+        "UPDATE decomposition_proposals SET endorsement_score = endorsement_score + ? WHERE proposal_id = ?",
+        (weight, proposal_id),
+    )
+
+    return {
+        "proposal_id": proposal_id,
+        "parent_task_id": parent_task_id,
+        "proposer_agent_id": proposer_agent_id,
+        "subtask_count": len(subtasks),
+        "status": "proposed",
+        "endorsement_score": weight,
+        "message": "Proposal created. Needs endorsements to activate.",
+    }
+
+
+async def endorse_proposal(
+    db: aiosqlite.Connection,
+    proposal_id: str,
+    agent_id: str,
+) -> dict:
+    """Endorse a decomposition proposal. Weighted by reputation.
+
+    If the endorsement threshold is reached, the proposal auto-activates.
+    If the endorser is the poster (task owner), it activates immediately.
+    """
+    cur = await db.execute(
+        "SELECT * FROM decomposition_proposals WHERE proposal_id = ?", (proposal_id,)
+    )
+    proposal = await cur.fetchone()
+    if not proposal:
+        raise ValueError("Proposal not found")
+    proposal = dict(proposal)
+
+    if proposal["status"] != "proposed":
+        raise ValueError(f"Proposal is already {proposal['status']}")
+
+    # Check not duplicate
+    cur = await db.execute(
+        "SELECT endorsement_id FROM proposal_endorsements WHERE proposal_id = ? AND agent_id = ?",
+        (proposal_id, agent_id),
+    )
+    if await cur.fetchone():
+        raise ValueError("Already endorsed this proposal")
+
+    # Get endorser reputation for weight
+    cur = await db.execute(
+        "SELECT reputation_score FROM agents WHERE agent_id = ?", (agent_id,)
+    )
+    agent = await cur.fetchone()
+    rep = agent["reputation_score"] if agent else 0
+    weight = max(1.0, rep / 20)
+
+    endorsement_id = str(uuid.uuid4())
+    await db.execute(
+        "INSERT INTO proposal_endorsements (endorsement_id, proposal_id, agent_id) VALUES (?, ?, ?)",
+        (endorsement_id, proposal_id, agent_id),
+    )
+    new_score = proposal["endorsement_score"] + weight
+    await db.execute(
+        "UPDATE decomposition_proposals SET endorsement_score = ? WHERE proposal_id = ?",
+        (new_score, proposal_id),
+    )
+
+    # Check if poster endorsed → immediate activation
+    cur = await db.execute(
+        "SELECT poster_agent_id FROM tasks WHERE task_id = ?",
+        (proposal["parent_task_id"],),
+    )
+    parent = await cur.fetchone()
+    is_poster = parent and parent["poster_agent_id"] == agent_id
+
+    # Count endorsements
+    cur = await db.execute(
+        "SELECT COUNT(*) as cnt FROM proposal_endorsements WHERE proposal_id = ?",
+        (proposal_id,),
+    )
+    endorsement_count = (await cur.fetchone())["cnt"]
+
+    # Auto-activate if poster endorsed OR threshold reached
+    activated = False
+    if is_poster or endorsement_count >= config.proposal_endorsement_threshold:
+        await _activate_proposal(db, proposal)
+        activated = True
+
+    return {
+        "proposal_id": proposal_id,
+        "endorsement_count": endorsement_count,
+        "endorsement_score": new_score,
+        "activated": activated,
+        "message": "Proposal activated! Subtasks created." if activated else "Endorsement recorded.",
+    }
+
+
+async def _activate_proposal(db: aiosqlite.Connection, proposal: dict):
+    """Activate a proposal — create the actual subtasks."""
+    parent_task_id = proposal["parent_task_id"]
+
+    # Reject all other proposals for this task
+    await db.execute(
+        """UPDATE decomposition_proposals SET status = 'rejected'
+           WHERE parent_task_id = ? AND proposal_id != ? AND status = 'proposed'""",
+        (parent_task_id, proposal["proposal_id"]),
+    )
+
+    # Activate this proposal
+    await db.execute(
+        "UPDATE decomposition_proposals SET status = 'active' WHERE proposal_id = ?",
+        (proposal["proposal_id"],),
+    )
+
+    # Get parent task
+    cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (parent_task_id,))
+    parent = dict(await cur.fetchone())
 
     # Mark parent as parent type
     await db.execute(
@@ -73,16 +216,13 @@ async def decompose_task(
         (parent_task_id,),
     )
 
+    subtasks = json.loads(proposal["subtasks_json"])
     parent_bounty = parent["bounty_amount"]
-    created = []
+
+    # Equal initial bounty split (fair share algo redistributes at release time)
+    initial_bounty = parent_bounty // len(subtasks)
 
     for i, sub in enumerate(subtasks):
-        weight = sub.get("weight_pct", 0)
-        sub_bounty = parent_bounty * weight // 100
-
-        if sub_bounty <= 0:
-            raise ValueError(f"Subtask '{sub.get('title', '')}' has zero bounty (weight too low)")
-
         task_id = str(uuid.uuid4())
         tags = json.dumps(sub.get("tags", []))
         difficulty = sub.get("difficulty", parent.get("difficulty", "medium"))
@@ -92,24 +232,203 @@ async def decompose_task(
             """INSERT INTO tasks (task_id, poster_agent_id, title, description, category,
                tags, difficulty, bounty_amount, base_bounty_amount, status, max_solvers,
                deadline, parent_task_id, task_type, weight_pct, sequence_order)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, 'subtask', ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, 'subtask', 0, ?)""",
+            (task_id, parent["poster_agent_id"], sub["title"], sub["description"],
+             parent.get("category", "general"), tags, difficulty,
+             initial_bounty, initial_bounty,
+             sub.get("max_solvers", 5), parent.get("deadline"),
+             parent_task_id, seq),
+        )
+
+
+async def get_proposals(db: aiosqlite.Connection, parent_task_id: str) -> list[dict]:
+    """Get all decomposition proposals for a task."""
+    cur = await db.execute(
+        """SELECT p.*, a.display_name as proposer_name,
+              (SELECT COUNT(*) FROM proposal_endorsements WHERE proposal_id = p.proposal_id) as endorsement_count
+           FROM decomposition_proposals p
+           JOIN agents a ON p.proposer_agent_id = a.agent_id
+           WHERE p.parent_task_id = ?
+           ORDER BY p.endorsement_score DESC""",
+        (parent_task_id,),
+    )
+    rows = await cur.fetchall()
+    results = []
+    for r in rows:
+        r = dict(r)
+        results.append({
+            "proposal_id": r["proposal_id"],
+            "proposer_agent_id": r["proposer_agent_id"],
+            "proposer_name": r["proposer_name"],
+            "subtasks": json.loads(r["subtasks_json"]),
+            "status": r["status"],
+            "endorsement_count": r["endorsement_count"],
+            "endorsement_score": r["endorsement_score"],
+            "created_at": r.get("created_at", ""),
+        })
+    return results
+
+
+# ── Legacy decompose_task — now wraps propose + auto-activate ──
+
+
+async def decompose_task(
+    db: aiosqlite.Connection,
+    parent_task_id: str,
+    poster_agent_id: str,
+    subtasks: list[dict],
+) -> list[dict]:
+    """Poster directly decomposes (shortcut: propose + auto-activate).
+
+    Kept for backwards compatibility. Poster's proposal activates immediately.
+    """
+    cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (parent_task_id,))
+    parent = await cur.fetchone()
+    if not parent:
+        raise ValueError("Parent task not found")
+    parent = dict(parent)
+
+    if parent["poster_agent_id"] != poster_agent_id:
+        raise ValueError("Only poster can directly decompose. Others should use propose + endorse.")
+    if parent["task_type"] == "subtask":
+        raise ValueError("Cannot decompose a subtask")
+    if parent["status"] != "open":
+        raise ValueError("Can only decompose open tasks")
+
+    cur = await db.execute(
+        "SELECT proposal_id FROM decomposition_proposals WHERE parent_task_id = ? AND status = 'active'",
+        (parent_task_id,),
+    )
+    if await cur.fetchone():
+        raise ValueError("Task already decomposed")
+
+    if not subtasks:
+        raise ValueError("At least one subtask required")
+
+    # Create proposal and immediately activate (poster privilege)
+    proposal_id = str(uuid.uuid4())
+    await db.execute(
+        """INSERT INTO decomposition_proposals
+           (proposal_id, parent_task_id, proposer_agent_id, subtasks_json, status, endorsement_score)
+           VALUES (?, ?, ?, ?, 'active', 999)""",
+        (proposal_id, parent_task_id, poster_agent_id, json.dumps(subtasks)),
+    )
+
+    # Mark parent
+    await db.execute(
+        "UPDATE tasks SET task_type = 'parent', updated_at = datetime('now') WHERE task_id = ?",
+        (parent_task_id,),
+    )
+
+    parent_bounty = parent["bounty_amount"]
+    initial_bounty = parent_bounty // len(subtasks)
+    created = []
+
+    for i, sub in enumerate(subtasks):
+        task_id = str(uuid.uuid4())
+        tags = json.dumps(sub.get("tags", []))
+        difficulty = sub.get("difficulty", parent.get("difficulty", "medium"))
+        seq = sub.get("sequence_order", i)
+
+        await db.execute(
+            """INSERT INTO tasks (task_id, poster_agent_id, title, description, category,
+               tags, difficulty, bounty_amount, base_bounty_amount, status, max_solvers,
+               deadline, parent_task_id, task_type, weight_pct, sequence_order)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, 'subtask', 0, ?)""",
             (task_id, poster_agent_id, sub["title"], sub["description"],
              parent.get("category", "general"), tags, difficulty,
-             sub_bounty, sub_bounty,  # base_bounty = initial bounty
+             initial_bounty, initial_bounty,
              sub.get("max_solvers", 5), parent.get("deadline"),
-             parent_task_id, weight, seq),
+             parent_task_id, seq),
         )
 
         created.append({
             "task_id": task_id,
             "title": sub["title"],
-            "weight_pct": weight,
-            "bounty_shl": micro_to_shl(sub_bounty),
+            "bounty_shl": micro_to_shl(initial_bounty),
             "difficulty": difficulty,
             "sequence_order": seq,
+            "note": "Initial bounty is equal split. Final payout computed by fair-share algorithm.",
         })
 
     return created
+
+
+# ── Cross-Review ──
+
+
+async def submit_cross_review(
+    db: aiosqlite.Connection,
+    reviewer_agent_id: str,
+    parent_task_id: str,
+    reviewed_subtask_id: str,
+    score: int,
+    comment: str | None = None,
+) -> dict:
+    """Submit a cross-review for a sibling subtask.
+
+    Reviewer must be a solver of another completed subtask in the same parent.
+    Score 1-5 feeds into the quality signal of the fair-share algorithm.
+    """
+    if score < 1 or score > 5:
+        raise ValueError("Score must be 1-5")
+
+    # Validate reviewed subtask
+    cur = await db.execute(
+        "SELECT * FROM tasks WHERE task_id = ? AND parent_task_id = ?",
+        (reviewed_subtask_id, parent_task_id),
+    )
+    reviewed = await cur.fetchone()
+    if not reviewed:
+        raise ValueError("Subtask not found in this parent task")
+    reviewed = dict(reviewed)
+
+    if reviewed["status"] != "completed":
+        raise ValueError("Can only review completed subtasks")
+
+    # Check reviewer is a solver of a DIFFERENT completed subtask in same parent
+    cur = await db.execute(
+        """SELECT t.task_id FROM tasks t
+           JOIN task_claims tc ON t.task_id = tc.task_id
+           WHERE t.parent_task_id = ? AND tc.solver_agent_id = ?
+           AND tc.status = 'won' AND t.task_id != ?""",
+        (parent_task_id, reviewer_agent_id, reviewed_subtask_id),
+    )
+    if not await cur.fetchone():
+        raise ValueError("Must be a winning solver of a sibling subtask to cross-review")
+
+    # Cannot review your own work
+    if reviewed.get("winning_submission_id"):
+        cur = await db.execute(
+            "SELECT solver_agent_id FROM submissions WHERE submission_id = ?",
+            (reviewed["winning_submission_id"],),
+        )
+        sub_row = await cur.fetchone()
+        if sub_row and sub_row["solver_agent_id"] == reviewer_agent_id:
+            raise ValueError("Cannot review your own subtask")
+
+    # Check duplicate
+    cur = await db.execute(
+        "SELECT review_id FROM cross_reviews WHERE reviewer_agent_id = ? AND reviewed_subtask_id = ?",
+        (reviewer_agent_id, reviewed_subtask_id),
+    )
+    if await cur.fetchone():
+        raise ValueError("Already reviewed this subtask")
+
+    review_id = str(uuid.uuid4())
+    await db.execute(
+        """INSERT INTO cross_reviews
+           (review_id, parent_task_id, reviewer_agent_id, reviewed_subtask_id, score, comment)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (review_id, parent_task_id, reviewer_agent_id, reviewed_subtask_id, score, comment),
+    )
+
+    return {
+        "review_id": review_id,
+        "reviewed_subtask_id": reviewed_subtask_id,
+        "score": score,
+        "message": "Cross-review submitted. This feeds into the fair-share quality signal.",
+    }
 
 
 # ── Rally (呐喊) ──
@@ -122,21 +441,10 @@ async def rally_for_subtask(
     stake_shl: int,
     message: str | None = None,
 ) -> dict:
-    """A participant stakes SHL to boost a stuck subtask's bounty.
-
-    Requirements:
-    - Supporter must have completed another subtask in the same parent, OR
-      have an active claim on a sibling subtask
-    - Target subtask must be open (not yet claimed or completed)
-    - Minimum stake: config.rally_min_stake_shl
-
-    The staked amount is added to the target subtask's bounty.
-    Supporter gets stake back + bonus when parent task completes.
-    """
+    """A participant stakes SHL to boost a stuck subtask's bounty."""
     if stake_shl < config.rally_min_stake_shl:
         raise ValueError(f"Minimum rally stake is {config.rally_min_stake_shl} SHL")
 
-    # Validate target subtask
     cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (target_subtask_id,))
     subtask = await cur.fetchone()
     if not subtask:
@@ -159,8 +467,7 @@ async def rally_for_subtask(
            AND t.task_id != ?""",
         (parent_task_id, supporter_agent_id, target_subtask_id),
     )
-    sibling_claim = await cur.fetchone()
-    if not sibling_claim:
+    if not await cur.fetchone():
         raise ValueError("Must be a participant in a sibling subtask to rally")
 
     # Check not already rallied
@@ -171,12 +478,10 @@ async def rally_for_subtask(
     if await cur.fetchone():
         raise ValueError("Already rallied for this subtask")
 
-    # Lock the stake
     stake_tx = await wallet_service.lock_rally_stake(
         db, supporter_agent_id, stake_shl, target_subtask_id
     )
 
-    # Create rally record
     rally_id = str(uuid.uuid4())
     stake_micro = shl_to_micro(stake_shl)
     await db.execute(
@@ -188,13 +493,12 @@ async def rally_for_subtask(
          stake_micro, stake_tx, message),
     )
 
-    # Increase target subtask bounty by stake amount
+    # Increase target subtask bounty (this also feeds difficulty signal)
     await db.execute(
         "UPDATE tasks SET bounty_amount = bounty_amount + ?, updated_at = datetime('now') WHERE task_id = ?",
         (stake_micro, target_subtask_id),
     )
 
-    # Get updated rally stats
     cur = await db.execute(
         "SELECT COUNT(*) as cnt, COALESCE(SUM(stake_amount), 0) as total FROM task_rallies WHERE target_subtask_id = ?",
         (target_subtask_id,),
@@ -221,24 +525,17 @@ async def create_referral(
     referred_agent_id: str,
     task_id: str,
 ) -> dict:
-    """Record a referral — referrer recruited referred_agent for a task.
-
-    Referrer gets reward when the referred agent successfully completes the task.
-    """
+    """Record a referral."""
     if referrer_agent_id == referred_agent_id:
         raise ValueError("Cannot refer yourself")
 
-    # Validate task exists and is claimable
     cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
     task = await cur.fetchone()
     if not task:
         raise ValueError("Task not found")
-    task = dict(task)
-
-    if task["status"] not in ("open", "claimed"):
+    if dict(task)["status"] not in ("open", "claimed"):
         raise ValueError("Task not available for referral")
 
-    # Check not duplicate
     cur = await db.execute(
         "SELECT referral_id FROM task_referrals WHERE task_id = ? AND referrer_agent_id = ? AND referred_agent_id = ?",
         (task_id, referrer_agent_id, referred_agent_id),
@@ -248,8 +545,7 @@ async def create_referral(
 
     referral_id = str(uuid.uuid4())
     await db.execute(
-        """INSERT INTO task_referrals (referral_id, task_id, referrer_agent_id, referred_agent_id)
-           VALUES (?, ?, ?, ?)""",
+        "INSERT INTO task_referrals (referral_id, task_id, referrer_agent_id, referred_agent_id) VALUES (?, ?, ?, ?)",
         (referral_id, task_id, referrer_agent_id, referred_agent_id),
     )
 
@@ -266,19 +562,7 @@ async def create_referral(
 
 
 async def escalate_stuck_subtasks(db: aiosqlite.Connection) -> int:
-    """Auto-escalate bounties on stuck subtasks. Called by background task.
-
-    A subtask is "stuck" if:
-    - It's a subtask (task_type = 'subtask')
-    - Status is 'open' (nobody claimed it)
-    - Created more than escalation_interval_hours ago
-    - Escalation level hasn't hit the max
-
-    Bounty increases by escalation_rate_pct each interval.
-    Increase is funded by system mint (new SHL into circulation).
-
-    Returns number of escalated subtasks.
-    """
+    """Auto-escalate bounties on stuck subtasks. Called by background task."""
     interval_hours = config.escalation_interval_hours
     max_mult = config.escalation_max_multiplier
     rate_pct = config.escalation_rate_pct
@@ -305,10 +589,7 @@ async def escalate_stuck_subtasks(db: aiosqlite.Connection) -> int:
         if increase <= 0:
             continue
 
-        # Mint the increase
         await wallet_service.mint_escalation(db, st["task_id"], increase)
-
-        # Update subtask bounty and escalation level
         await db.execute(
             """UPDATE tasks SET bounty_amount = ?, escalation_level = ?,
                updated_at = datetime('now') WHERE task_id = ?""",
@@ -318,25 +599,21 @@ async def escalate_stuck_subtasks(db: aiosqlite.Connection) -> int:
 
     if escalated:
         await db.commit()
-
     return escalated
 
 
-# ── Collective Release ──
+# ── Collective Release with Fair Share ──
 
 
 async def check_and_release_parent(db: aiosqlite.Connection, parent_task_id: str) -> dict | None:
-    """Check if all subtasks of a parent are completed, and release all rewards.
+    """Check if all subtasks are completed, compute fair shares, and release.
 
-    Called after each subtask completion. If all subtasks done:
-    1. Release each subtask solver's bounty from parent's frozen pool
-    2. Return rally stakes + bonus to rally participants
-    3. Pay referral rewards
-    4. Mark parent as completed
+    KEY CHANGE: Bounty distribution is computed by fair-share algorithm,
+    not by fixed weight_pct. The algorithm uses market-revealed signals
+    (difficulty, quality, scarcity, dependency).
 
     Returns release summary or None if not all subtasks are done.
     """
-    # Get parent
     cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (parent_task_id,))
     parent = await cur.fetchone()
     if not parent:
@@ -348,13 +625,12 @@ async def check_and_release_parent(db: aiosqlite.Connection, parent_task_id: str
     if parent["status"] == "completed":
         return None
 
-    # Check all subtasks
+    # Get all subtasks
     cur = await db.execute(
         "SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY sequence_order",
         (parent_task_id,),
     )
     subtasks = [dict(r) for r in await cur.fetchall()]
-
     if not subtasks:
         return None
 
@@ -363,20 +639,26 @@ async def check_and_release_parent(db: aiosqlite.Connection, parent_task_id: str
         if st["status"] != "completed":
             return None
 
-    # === ALL SUBTASKS COMPLETED — RELEASE EVERYTHING ===
+    # === ALL COMPLETE — COMPUTE FAIR SHARES AND RELEASE ===
+
+    # Compute fair share for each subtask
+    shares = await compute_fair_shares(db, parent_task_id, subtasks)
+    share_map = {s["subtask_id"]: s for s in shares}
+
+    total_bounty = parent["bounty_amount"]
+    poster_id = parent["poster_agent_id"]
 
     release_details = {
         "parent_task_id": parent_task_id,
         "subtasks_completed": len(subtasks),
+        "algorithm": "fair_share_v1",
         "solver_payouts": [],
         "rally_refunds": [],
         "referral_rewards": [],
+        "proposer_reward": None,
     }
 
-    poster_id = parent["poster_agent_id"]
-
     for st in subtasks:
-        # Find the winning submission solver
         if not st.get("winning_submission_id"):
             continue
 
@@ -389,17 +671,27 @@ async def check_and_release_parent(db: aiosqlite.Connection, parent_task_id: str
             continue
         solver_id = sub_row["solver_agent_id"]
 
-        # Release bounty from parent's frozen pool to solver
-        bounty_shl = st["bounty_amount"] // 1_000_000
+        # Fair share payout
+        share_info = share_map.get(st["task_id"], {})
+        share_pct = share_info.get("share_pct", 100.0 / len(subtasks))
+        payout_micro = int(total_bounty * share_pct / 100)
+        payout_shl = payout_micro // 1_000_000
+
+        if payout_shl <= 0:
+            payout_shl = 1  # minimum 1 SHL
+
         release_tx, bonus_tx = await wallet_service.release_bounty(
-            db, poster_id, solver_id, bounty_shl, st["task_id"],
+            db, poster_id, solver_id, payout_shl, st["task_id"],
             config.bounty_winner_bonus_pct,
         )
 
         release_details["solver_payouts"].append({
             "subtask_id": st["task_id"],
+            "subtask_title": st["title"],
             "solver_agent_id": solver_id,
-            "bounty_shl": bounty_shl,
+            "share_pct": share_pct,
+            "payout_shl": payout_shl,
+            "components": share_info.get("components", {}),
         })
 
     # Refund rally stakes + pay bonus
@@ -410,22 +702,18 @@ async def check_and_release_parent(db: aiosqlite.Connection, parent_task_id: str
     rallies = [dict(r) for r in await cur.fetchall()]
 
     for rally in rallies:
-        # Refund stake
         await wallet_service.refund_rally_stake(
             db, rally["supporter_agent_id"], rally["stake_amount"], rally["target_subtask_id"]
         )
-        # Pay bonus (% of staked amount, minted)
         bonus = rally["stake_amount"] * config.rally_bonus_pct // 100
         if bonus > 0:
             await wallet_service.grant_rally_bonus(
                 db, rally["supporter_agent_id"], bonus, rally["target_subtask_id"]
             )
-
         await db.execute(
             "UPDATE task_rallies SET status = 'rewarded' WHERE rally_id = ?",
             (rally["rally_id"],),
         )
-
         release_details["rally_refunds"].append({
             "supporter_agent_id": rally["supporter_agent_id"],
             "stake_refunded_shl": micro_to_shl(rally["stake_amount"]),
@@ -436,7 +724,6 @@ async def check_and_release_parent(db: aiosqlite.Connection, parent_task_id: str
     for st in subtasks:
         if not st.get("winning_submission_id"):
             continue
-
         cur = await db.execute(
             "SELECT solver_agent_id FROM submissions WHERE submission_id = ?",
             (st["winning_submission_id"],),
@@ -446,15 +733,11 @@ async def check_and_release_parent(db: aiosqlite.Connection, parent_task_id: str
             continue
         solver_id = sub_row["solver_agent_id"]
 
-        # Check if anyone referred this solver to this subtask
         cur = await db.execute(
-            """SELECT * FROM task_referrals
-               WHERE task_id = ? AND referred_agent_id = ? AND status = 'pending'""",
+            "SELECT * FROM task_referrals WHERE task_id = ? AND referred_agent_id = ? AND status = 'pending'",
             (st["task_id"], solver_id),
         )
-        referrals = [dict(r) for r in await cur.fetchall()]
-
-        for ref in referrals:
+        for ref in [dict(r) for r in await cur.fetchall()]:
             reward = st["bounty_amount"] * config.referral_bonus_pct // 100
             if reward > 0:
                 reward_tx = await wallet_service.grant_referral_reward(
@@ -468,9 +751,29 @@ async def check_and_release_parent(db: aiosqlite.Connection, parent_task_id: str
                 )
                 release_details["referral_rewards"].append({
                     "referrer_agent_id": ref["referrer_agent_id"],
-                    "referred_agent_id": ref["referred_agent_id"],
                     "reward_shl": micro_to_shl(reward),
                 })
+
+    # Pay proposer (architect reward)
+    cur = await db.execute(
+        "SELECT * FROM decomposition_proposals WHERE parent_task_id = ? AND status = 'active'",
+        (parent_task_id,),
+    )
+    proposal = await cur.fetchone()
+    if proposal:
+        proposal = dict(proposal)
+        proposer_id = proposal["proposer_agent_id"]
+        # Only pay if proposer is not the poster (poster already benefits)
+        if proposer_id != poster_id:
+            reward_micro = total_bounty * config.proposer_reward_pct // 100
+            if reward_micro > 0:
+                reward_tx = await wallet_service.grant_referral_reward(
+                    db, proposer_id, reward_micro, parent_task_id
+                )
+                release_details["proposer_reward"] = {
+                    "proposer_agent_id": proposer_id,
+                    "reward_shl": micro_to_shl(reward_micro),
+                }
 
     # Mark parent as completed
     await db.execute(
@@ -485,7 +788,7 @@ async def check_and_release_parent(db: aiosqlite.Connection, parent_task_id: str
 
 
 async def get_subtasks(db: aiosqlite.Connection, parent_task_id: str) -> list[dict]:
-    """Get all subtasks of a parent task with rally and completion stats."""
+    """Get all subtasks with rally and completion stats."""
     cur = await db.execute(
         """SELECT t.*,
               (SELECT COUNT(*) FROM task_claims WHERE task_id = t.task_id AND status IN ('active','submitted')) as claim_count,

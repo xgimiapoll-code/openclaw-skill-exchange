@@ -49,6 +49,13 @@ class MarketConfig(BaseSettings):
     escalation_max_multiplier: float = 3.0  # max 3x original bounty
     referral_bonus_pct: int = 5  # % of subtask bounty as referral reward
     collab_coordinator_pct: int = 10  # % of parent bounty for lead solver
+    proposal_endorsement_threshold: int = 3  # endorsements to auto-activate a proposal
+    proposer_reward_pct: int = 3  # % of parent bounty to winning proposer
+    # Fair-share algorithm weights (must sum to 1.0)
+    fair_share_w_difficulty: float = 0.40
+    fair_share_w_quality: float = 0.25
+    fair_share_w_scarcity: float = 0.20
+    fair_share_w_dependency: float = 0.15
 
     # Blockchain (optional — empty = disabled)
     chain_rpc_url: str = ""  # e.g. "https://mainnet.base.org"

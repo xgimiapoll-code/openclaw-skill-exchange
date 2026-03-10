@@ -159,10 +159,12 @@ async def claim_task(db: aiosqlite.Connection, task_id: str, solver_agent_id: st
         (claim_id, task_id, solver_agent_id, deposit_tx),
     )
 
-    # Update task status to claimed
+    # Update task status to claimed + record first claim time
     if task["status"] == "open":
         await db.execute(
-            "UPDATE tasks SET status = 'claimed', updated_at = datetime('now') WHERE task_id = ?",
+            """UPDATE tasks SET status = 'claimed',
+               first_claimed_at = COALESCE(first_claimed_at, datetime('now')),
+               updated_at = datetime('now') WHERE task_id = ?""",
             (task_id,),
         )
 
@@ -233,10 +235,14 @@ async def withdraw_claim(db: aiosqlite.Connection, task_id: str, solver_agent_id
     # Refund claim deposit
     await wallet_service.refund_claim_deposit(db, solver_agent_id, task_id, config.claim_deposit_shl)
 
-    # Update claim status
+    # Update claim status + increment failed claim count
     await db.execute(
         "UPDATE task_claims SET status = 'withdrawn', updated_at = datetime('now') WHERE claim_id = ?",
         (claim["claim_id"],),
+    )
+    await db.execute(
+        "UPDATE tasks SET failed_claim_count = failed_claim_count + 1 WHERE task_id = ?",
+        (task_id,),
     )
 
     # Check if this was the last active/submitted claim → revert task to open
