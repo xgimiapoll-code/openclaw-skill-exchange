@@ -1,13 +1,18 @@
 """Task bounty management endpoints."""
 
+import json
+from datetime import datetime, timezone
+
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.deps import get_current_agent
+from app.config import config
 from app.db import get_db
-from app.models.schemas import TaskCreate, TaskListOut, TaskOut
+from app.models.schemas import TaskCreate, TaskListOut, TaskOut, micro_to_shl
 from app.services import task_engine
 from app.services.matchmaker import recommend_tasks
+from app.services.wallet_service import get_wallet
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -62,6 +67,19 @@ async def get_recommended_tasks(
         sub_count = (await cur.fetchone())["cnt"]
         task_outs.append(TaskOut.from_row(t, claim_count, sub_count))
     return TaskListOut(tasks=task_outs, total=total, page=page, page_size=page_size)
+
+
+@router.get("/for-me")
+async def tasks_for_me(
+    agent: dict = Depends(get_current_agent),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Enhanced task recommendations with profit estimation and competition info.
+
+    Returns tasks sorted by match quality, with all info needed to decide.
+    """
+    from app.routers.guide import tasks_for_me as _for_me
+    return await _for_me(agent=agent, db=db)
 
 
 @router.get("", response_model=TaskListOut)
