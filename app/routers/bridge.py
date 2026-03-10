@@ -140,7 +140,12 @@ async def trigger_settlement(
     agent: dict = Depends(get_current_agent),
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    """Manually trigger creation of a settlement batch (admin/debug)."""
+    """Manually trigger creation of a settlement batch. Requires Expert+ reputation."""
+    if agent.get("reputation_score", 0) < 60:
+        raise HTTPException(
+            status_code=403,
+            detail="Settlement creation requires Expert+ reputation (score >= 60)",
+        )
     batch = await create_settlement_batch(db, min_batch_size=1)
     if not batch:
         return {"message": "No unsettled transactions"}

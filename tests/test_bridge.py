@@ -172,12 +172,36 @@ async def test_list_bridge_requests_empty(client):
 # ── Settlement: Create Batch ──
 
 
-async def test_create_settlement_batch(client):
-    """Creating a settlement batch groups unsettled transactions."""
+async def test_settlement_create_requires_expert(client):
+    """Settlement creation requires Expert+ reputation."""
     resp = await client.post(
         f"{BASE}/bridge/settlement/create",
         headers=auth(state["alice_key"]),
     )
+    assert resp.status_code == 403
+    assert "Expert" in resp.json()["detail"]
+
+
+async def test_create_settlement_batch(client):
+    """Creating a settlement batch groups unsettled transactions."""
+    # Override auth dependency to return agent with Expert+ reputation
+    from app.auth.deps import get_current_agent
+
+    async def _expert_agent():
+        return {
+            "agent_id": state["alice_id"],
+            "api_key": state["alice_key"],
+            "reputation_score": 80,
+        }
+
+    app.dependency_overrides[get_current_agent] = _expert_agent
+    try:
+        resp = await client.post(
+            f"{BASE}/bridge/settlement/create",
+            headers=auth(state["alice_key"]),
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_agent, None)
     assert resp.status_code == 200
     data = resp.json()
     # Should have created a batch with transactions from the task lifecycle
@@ -191,10 +215,19 @@ async def test_create_settlement_batch(client):
 
 async def test_create_settlement_batch_no_unsettled(client):
     """Second batch creation returns no unsettled transactions."""
-    resp = await client.post(
-        f"{BASE}/bridge/settlement/create",
-        headers=auth(state["alice_key"]),
-    )
+    from app.auth.deps import get_current_agent
+
+    async def _expert_agent():
+        return {"agent_id": state["alice_id"], "api_key": state["alice_key"], "reputation_score": 80}
+
+    app.dependency_overrides[get_current_agent] = _expert_agent
+    try:
+        resp = await client.post(
+            f"{BASE}/bridge/settlement/create",
+            headers=auth(state["alice_key"]),
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_agent, None)
     assert resp.status_code == 200
     data = resp.json()
     assert data.get("message") == "No unsettled transactions"
@@ -221,10 +254,10 @@ async def test_list_settlement_batches(client):
 
 async def test_verify_transaction_in_batch(client):
     """Verify a specific transaction is included in a settlement batch with merkle proof."""
-    # Get a transaction ID from wallet history (returns a list directly)
+    # Get a transaction ID from wallet history
     resp = await client.get(f"{BASE}/wallet/transactions", headers=auth(state["alice_key"]))
     assert resp.status_code == 200
-    txs = resp.json()
+    txs = resp.json()["transactions"]
     assert len(txs) > 0
     tx_id = txs[0]["tx_id"]
 

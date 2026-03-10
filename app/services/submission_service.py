@@ -146,7 +146,7 @@ async def complete_task_with_winner(
             data={"task_id": task_id, "solver_agent_id": submission["solver_agent_id"], "bounty_shl": bounty_shl},
             target_agent_ids=[poster_agent_id, submission["solver_agent_id"]],
         ))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Event publish failed: %s", e)
 
     return result

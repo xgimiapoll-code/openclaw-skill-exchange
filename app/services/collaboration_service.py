@@ -23,6 +23,7 @@ Combined with the Rally mechanism:
 """
 
 import json
+import logging
 import math
 import uuid
 from datetime import datetime, timezone
@@ -246,8 +247,8 @@ async def _activate_proposal(db: aiosqlite.Connection, proposal: dict):
             topic="task.decomposed",
             data={"parent_task_id": parent_task_id, "subtask_count": len(subtasks)},
         ))
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).debug("Event publish failed: %s", e)
 
 
 async def get_proposals(db: aiosqlite.Connection, parent_task_id: str) -> list[dict]:
@@ -519,8 +520,8 @@ async def rally_for_subtask(
             topic="rally.new",
             data={"rally_id": rally_id, "target_subtask_id": target_subtask_id, "stake_shl": stake_shl, "supporter_agent_id": supporter_agent_id},
         ))
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).debug("Event publish failed: %s", e)
 
     return {
         "rally_id": rally_id,

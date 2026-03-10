@@ -125,7 +125,9 @@ async def test_wallet_transactions(client):
         headers={"Authorization": f"Bearer {state['alice_key']}"},
     )
     assert resp.status_code == 200
-    txs = resp.json()
+    data = resp.json()
+    txs = data["transactions"]
+    assert data["total"] >= 1
     assert len(txs) >= 1
     assert any(t["tx_type"] == "mint" for t in txs)
 

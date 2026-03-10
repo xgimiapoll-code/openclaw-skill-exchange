@@ -27,15 +27,22 @@ def is_blockchain_enabled() -> bool:
     return bool(config.chain_rpc_url and config.bridge_operator_key)
 
 
+_w3_instance = None
+
+
 def get_web3():
-    """Get Web3 instance. Returns None if not configured."""
+    """Get Web3 instance (cached singleton). Returns None if not configured."""
+    global _w3_instance
     if not is_blockchain_enabled():
         return None
+    if _w3_instance is not None:
+        return _w3_instance
     from app.config import config
     w3 = Web3(Web3.HTTPProvider(config.chain_rpc_url))
     if not w3.is_connected():
         logger.warning("Web3 not connected to %s", config.chain_rpc_url)
         return None
+    _w3_instance = w3
     return w3
 
 

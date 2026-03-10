@@ -29,7 +29,7 @@ async def get_my_wallet(
     return WalletOut.from_row(wallet)
 
 
-@router.get("/transactions", response_model=list[TransactionOut])
+@router.get("/transactions")
 async def get_transactions(
     page: int = 1,
     page_size: int = 50,
@@ -42,6 +42,14 @@ async def get_transactions(
         raise HTTPException(status_code=404, detail="Wallet not found")
 
     wid = wallet["wallet_id"]
+
+    # Total count for pagination
+    cur = await db.execute(
+        "SELECT COUNT(*) as cnt FROM transactions WHERE from_wallet_id = ? OR to_wallet_id = ?",
+        (wid, wid),
+    )
+    total = (await cur.fetchone())["cnt"]
+
     offset = (page - 1) * page_size
     cur = await db.execute(
         """SELECT * FROM transactions
@@ -50,7 +58,12 @@ async def get_transactions(
         (wid, wid, page_size, offset),
     )
     rows = await cur.fetchall()
-    return [TransactionOut.from_row(dict(r)) for r in rows]
+    return {
+        "transactions": [TransactionOut.from_row(dict(r)) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.post("/claim-faucet", response_model=FaucetOut)

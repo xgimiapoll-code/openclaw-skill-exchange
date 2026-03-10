@@ -252,7 +252,7 @@ async def test_dashboard_suggested_action_work_first(client):
     data = resp.json()
     suggested = data["suggested_next_action"]
     assert suggested["priority"] == "high"
-    assert "待完成" in suggested["message"]
+    assert "claimed task" in suggested["message"]
 
 
 async def test_dashboard_poster_needs_review(client):
@@ -270,7 +270,7 @@ async def test_dashboard_poster_needs_review(client):
     data = resp.json()
     assert len(data["tasks_needing_review"]) == 1
     assert data["suggested_next_action"]["priority"] == "high"
-    assert "评选" in data["suggested_next_action"]["message"]
+    assert "winner selection" in data["suggested_next_action"]["message"]
 
 
 async def test_dashboard_suggested_tasks(client):

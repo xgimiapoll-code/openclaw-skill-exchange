@@ -1,5 +1,6 @@
 """Settlement service — batch off-chain transactions and record merkle roots on-chain."""
 
+import asyncio
 import hashlib
 import logging
 import uuid
@@ -84,11 +85,12 @@ async def create_settlement_batch(db: aiosqlite.Connection, min_batch_size: int 
 
     Returns batch dict or None if not enough transactions.
     """
-    # Find unsettled transactions
+    # Find unsettled transactions (capped to prevent OOM on large backlogs)
     cur = await db.execute(
         """SELECT tx_id, amount, tx_type, created_at FROM transactions
            WHERE settlement_batch_id IS NULL
-           ORDER BY created_at ASC"""
+           ORDER BY created_at ASC
+           LIMIT 10000"""
     )
     txs = await cur.fetchall()
 
@@ -159,22 +161,26 @@ async def submit_batch_onchain(db: aiosqlite.Connection, batch_id: str) -> dict:
     merkle_root_bytes = bytes.fromhex(batch["merkle_root"])
 
     try:
-        nonce = w3.eth.get_transaction_count(operator.address)
-        tx = bridge.functions.settleBatch(
-            merkle_root_bytes,
-            batch["tx_count"],
-        ).build_transaction({
-            "from": operator.address,
-            "nonce": nonce,
-            "gas": 80000,
-            "maxFeePerGas": w3.eth.gas_price * 2,
-            "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-            "chainId": w3.eth.chain_id,
-        })
+        # Run blocking Web3 calls in thread to avoid blocking event loop
+        def _submit():
+            nonce = w3.eth.get_transaction_count(operator.address)
+            tx = bridge.functions.settleBatch(
+                merkle_root_bytes,
+                batch["tx_count"],
+            ).build_transaction({
+                "from": operator.address,
+                "nonce": nonce,
+                "gas": 80000,
+                "maxFeePerGas": w3.eth.gas_price * 2,
+                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+                "chainId": w3.eth.chain_id,
+            })
+            signed = operator.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            return tx_hash, receipt
 
-        signed = operator.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        tx_hash, receipt = await asyncio.to_thread(_submit)
 
         if receipt["status"] == 1:
             await db.execute(

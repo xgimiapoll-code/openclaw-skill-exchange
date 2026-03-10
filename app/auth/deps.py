@@ -35,45 +35,9 @@ async def get_current_agent(
             return dict(agent)
 
     # 2. Try Ed25519 signature headers
-    sig = request.headers.get("X-Signature")
-    ts = request.headers.get("X-Timestamp")
-    agent_id = request.headers.get("X-Agent-Id")
-
-    if sig and ts and agent_id:
-        from app.auth.signature import verify_ed25519, build_sign_payload, MAX_CLOCK_SKEW
-        from datetime import datetime, timezone
-
-        # Validate timestamp
-        try:
-            req_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            if req_time.tzinfo is None:
-                req_time = req_time.replace(tzinfo=timezone.utc)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid X-Timestamp format")
-
-        now = datetime.now(timezone.utc)
-        if abs(now - req_time) > MAX_CLOCK_SKEW:
-            raise HTTPException(status_code=401, detail="Timestamp expired or too far in the future")
-
-        # Look up agent
-        cursor = await db.execute(
-            "SELECT * FROM agents WHERE agent_id = ? AND status = 'active'",
-            (agent_id,),
-        )
-        agent = await cursor.fetchone()
-        if not agent:
-            raise HTTPException(status_code=401, detail="Agent not found or inactive")
-
-        pub_key = agent["public_key"]
-        if not pub_key:
-            raise HTTPException(status_code=401, detail="Agent has no public key registered")
-
-        body = await request.body()
-        payload = build_sign_payload(request.method, request.url.path, ts, body)
-        if not verify_ed25519(pub_key, sig, payload):
-            raise HTTPException(status_code=401, detail="Invalid signature")
-
-        return dict(agent)
+    if request.headers.get("X-Signature"):
+        from app.auth.signature import get_agent_by_signature
+        return await get_agent_by_signature(request, db)
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

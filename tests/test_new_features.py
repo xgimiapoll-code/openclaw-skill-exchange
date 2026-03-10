@@ -92,7 +92,7 @@ async def test_task_creation_no_pending_tx(client):
     state["task1_id"] = task_id
 
     # Check transactions — no 'pending' reference_id should exist
-    txs = (await client.get("/v1/market/wallet/transactions", headers=auth(state["alice_key"]))).json()
+    txs = (await client.get("/v1/market/wallet/transactions", headers=auth(state["alice_key"]))).json()["transactions"]
     lock_txs = [t for t in txs if t["tx_type"] == "bounty_lock"]
     for tx in lock_txs:
         assert tx["reference_id"] != "pending", "Found 'pending' reference_id — race condition not fixed"

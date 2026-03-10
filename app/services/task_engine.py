@@ -1,6 +1,7 @@
 """Task lifecycle state machine."""
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -79,8 +80,8 @@ async def create_task(db: aiosqlite.Connection, poster_agent_id: str,
             topic="task.new",
             data={"task_id": task_id, "title": title, "bounty_shl": bounty_shl, "category": category},
         ))
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).debug("Event publish failed: %s", e)
 
     cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
     return dict(await cur.fetchone())
@@ -205,8 +206,8 @@ async def claim_task(db: aiosqlite.Connection, task_id: str, solver_agent_id: st
             data={"task_id": task_id, "solver_agent_id": solver_agent_id},
             target_agent_ids=[task["poster_agent_id"]],
         ))
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).debug("Event publish failed: %s", e)
 
     cur = await db.execute("SELECT * FROM task_claims WHERE claim_id = ?", (claim_id,))
     return dict(await cur.fetchone())

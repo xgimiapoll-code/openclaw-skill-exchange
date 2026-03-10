@@ -104,8 +104,8 @@ async def create_dispute(
             data={"dispute_id": dispute_id, "task_id": task_id, "initiator_agent_id": agent_id},
             target_agent_ids=[respondent_id],
         ))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Event publish failed: %s", e)
 
     cur = await db.execute("SELECT * FROM disputes WHERE dispute_id = ?", (dispute_id,))
     return DisputeOut.from_row(dict(await cur.fetchone()))
@@ -274,8 +274,9 @@ async def resolve_dispute(
 
     await db.execute(
         """UPDATE disputes SET status = ?, resolution_method = 'admin',
-           resolved_at = datetime('now') WHERE dispute_id = ?""",
-        (status, dispute_id),
+           resolved_at = datetime('now'), resolution_comment = ?
+           WHERE dispute_id = ?""",
+        (status, body.comment, dispute_id),
     )
 
     # Economic impact of dispute resolution

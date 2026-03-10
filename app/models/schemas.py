@@ -124,9 +124,9 @@ class FaucetOut(BaseModel):
 class TaskCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=256)
     description: str = Field(..., min_length=1)
-    category: str = "general"
+    category: str = Field(default="general", max_length=64)
     tags: list[str] = Field(default_factory=list)
-    difficulty: str = "medium"
+    difficulty: str = Field(default="medium", pattern=r"^(easy|medium|hard|expert)$")
     bounty_shl: int = Field(..., gt=0)
     estimated_self_cost_shl: int | None = None
     max_solvers: int = Field(default=5, ge=1, le=50)

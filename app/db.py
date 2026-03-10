@@ -331,6 +331,7 @@ CREATE TABLE IF NOT EXISTS disputes (
         'open','under_review','resolved_initiator','resolved_respondent','dismissed'
     )),
     resolution_method TEXT CHECK(resolution_method IN ('auto','community_vote','admin')),
+    resolution_comment TEXT,
     resolved_at TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );

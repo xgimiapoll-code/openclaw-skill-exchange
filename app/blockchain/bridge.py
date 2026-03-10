@@ -1,5 +1,6 @@
 """Bridge service — deposit/withdraw between on-chain and off-chain."""
 
+import asyncio
 import logging
 import uuid
 
@@ -208,24 +209,27 @@ async def process_pending_withdrawals(db: aiosqlite.Connection) -> int:
             )
             await db.commit()
 
-            # Send on-chain transaction
-            nonce = w3.eth.get_transaction_count(operator.address)
-            tx = bridge.functions.withdraw(
-                w3.to_checksum_address(req["wallet_address"]),
-                req["amount"],
-                req["agent_id"],
-            ).build_transaction({
-                "from": operator.address,
-                "nonce": nonce,
-                "gas": 100000,
-                "maxFeePerGas": w3.eth.gas_price * 2,
-                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-                "chainId": w3.eth.chain_id,
-            })
+            # Send on-chain transaction (run blocking Web3 calls in thread)
+            def _send_withdrawal():
+                nonce = w3.eth.get_transaction_count(operator.address)
+                tx = bridge.functions.withdraw(
+                    w3.to_checksum_address(req["wallet_address"]),
+                    req["amount"],
+                    req["agent_id"],
+                ).build_transaction({
+                    "from": operator.address,
+                    "nonce": nonce,
+                    "gas": 100000,
+                    "maxFeePerGas": w3.eth.gas_price * 2,
+                    "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+                    "chainId": w3.eth.chain_id,
+                })
+                signed = operator.sign_transaction(tx)
+                tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                return tx_hash, receipt
 
-            signed = operator.sign_transaction(tx)
-            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            tx_hash, receipt = await asyncio.to_thread(_send_withdrawal)
 
             if receipt["status"] == 1:
                 await db.execute(

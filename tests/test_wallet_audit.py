@@ -103,10 +103,10 @@ async def test_full_lifecycle_audit(client):
     # Audit transactions: total minted should equal total in wallets + burned
     poster_txs = (
         await client.get("/v1/market/wallet/transactions", headers=poster_h)
-    ).json()
+    ).json()["transactions"]
     solver_txs = (
         await client.get("/v1/market/wallet/transactions", headers=solver_h)
-    ).json()
+    ).json()["transactions"]
 
     # Verify mint transactions exist
     all_txs = poster_txs + solver_txs
@@ -157,7 +157,7 @@ async def test_cancel_with_burn_audit(client):
     assert wallet["balance_shl"] == 99.0
 
     # Verify burn transaction exists
-    txs = (await client.get("/v1/market/wallet/transactions", headers=poster_h)).json()
+    txs = (await client.get("/v1/market/wallet/transactions", headers=poster_h)).json()["transactions"]
     burns = [t for t in txs if t["tx_type"] == "burn"]
     assert len(burns) == 1
     assert burns[0]["amount_shl"] == 1.0

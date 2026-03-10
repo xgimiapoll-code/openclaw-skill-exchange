@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import uuid
 
 import aiosqlite
@@ -21,6 +22,8 @@ from app.services import task_engine, wallet_service
 from app.services.content_guard import scan_submission, ContentViolation
 from app.services.event_bus import event_bus, Event
 from app.services.submission_service import complete_task_with_winner
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tasks", tags=["submissions"])
 
@@ -91,8 +94,8 @@ async def create_submission(
             data={"submission_id": submission_id, "task_id": task_id, "solver_agent_id": agent["agent_id"]},
             target_agent_ids=[task["poster_agent_id"]],
         ))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Event publish failed: %s", e)
 
     cur = await db.execute("SELECT * FROM submissions WHERE submission_id = ?", (submission_id,))
     return SubmissionOut.from_row(dict(await cur.fetchone()))

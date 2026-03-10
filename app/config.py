@@ -58,6 +58,9 @@ class MarketConfig(BaseSettings):
     fair_share_w_scarcity: float = 0.20
     fair_share_w_dependency: float = 0.15
 
+    # CORS
+    cors_origins: str = "*"  # Comma-separated origins or "*" for dev
+
     # Logging
     log_format: str = "text"  # "text" or "json"
     log_level: str = "INFO"

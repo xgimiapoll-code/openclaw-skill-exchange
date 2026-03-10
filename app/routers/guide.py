@@ -268,13 +268,16 @@ async def tasks_for_me(
     wallet = await get_wallet(db, agent_id)
     balance_shl = micro_to_shl(wallet["balance"]) if wallet else 0
 
-    # Get open/claimed tasks not posted by this agent
+    # Get open/claimed tasks not posted by this agent (with claim_count via subquery)
     cur = await db.execute(
-        """SELECT * FROM tasks
-           WHERE status IN ('open', 'claimed')
-           AND poster_agent_id != ?
-           AND task_type != 'parent'
-           ORDER BY created_at DESC""",
+        """SELECT t.*,
+                  (SELECT COUNT(*) FROM task_claims
+                   WHERE task_id = t.task_id AND status IN ('active','submitted')) as claim_count
+           FROM tasks t
+           WHERE t.status IN ('open', 'claimed')
+           AND t.poster_agent_id != ?
+           AND t.task_type != 'parent'
+           ORDER BY t.created_at DESC""",
         (agent_id,),
     )
     tasks = [dict(r) for r in await cur.fetchall()]
@@ -304,12 +307,8 @@ async def tasks_for_me(
         overlap = agent_tags_set & task_tags_set
         match_score = len(overlap)
 
-        # Competition
-        cur = await db.execute(
-            "SELECT COUNT(*) as cnt FROM task_claims WHERE task_id = ? AND status IN ('active','submitted')",
-            (task["task_id"],),
-        )
-        claim_count = (await cur.fetchone())["cnt"]
+        # Competition (from subquery, no extra DB call)
+        claim_count = task.get("claim_count", 0)
         slots_remaining = task["max_solvers"] - claim_count
 
         if slots_remaining <= 0:
@@ -365,7 +364,7 @@ async def tasks_for_me(
                 "bonus_shl": round(bonus_shl, 1),
                 "deposit_shl": deposit,
                 "net_profit_shl": round(net_profit, 1),
-                "note": f"含 {bonus_pct}% 奖金" + (" (含 Master 加成)" if is_master else ""),
+                "note": f"Includes {bonus_pct}% bonus" + (" (incl. Master tier)" if is_master else ""),
             },
             "deadline_hours_left": deadline_hours_left,
             "can_afford": balance_shl >= deposit,
@@ -384,7 +383,7 @@ async def tasks_for_me(
         "matching_tasks": results,
         "total_available": len(results),
         "no_match_tip": (
-            "没有找到匹配任务？更新你的 skill_tags 以获得更好的推荐："
+            "No matching tasks found? Update your skill_tags for better recommendations: "
             "PATCH /v1/market/agents/me {\"skill_tags\": [\"python\", \"docker\", ...]}"
         ) if not results else None,
     }
@@ -439,9 +438,9 @@ async def my_dashboard(
             "task_status": r["task_status"],
             "deadline_hours_left": hours_left,
             "action_needed": (
-                "提交方案: POST /v1/market/tasks/{}/submissions".format(r["task_id"])
+                "Submit solution: POST /v1/market/tasks/{}/submissions".format(r["task_id"])
                 if r["claim_status"] == "active"
-                else "等待评选"
+                else "Awaiting review"
             ),
         })
 
@@ -473,7 +472,7 @@ async def my_dashboard(
             "task_id": r["task_id"],
             "title": r["title"],
             "bounty_shl": micro_to_shl(r["bounty_amount"]),
-            "action": f"评选获胜者: GET /v1/market/tasks/{r['task_id']}/submissions 然后 POST /v1/market/tasks/{r['task_id']}/select-winner",
+            "action": f"Select winner: GET /v1/market/tasks/{r['task_id']}/submissions then POST /v1/market/tasks/{r['task_id']}/select-winner",
         }
         for r in await cur.fetchall()
     ]
@@ -605,7 +604,7 @@ def _suggest_next_action(
         t = needs_review[0]
         return {
             "priority": "high",
-            "message": f"你有 {len(needs_review)} 个任务需要评选获胜者",
+            "message": f"You have {len(needs_review)} task(s) awaiting winner selection",
             "action": t["action"],
         }
 
@@ -615,8 +614,8 @@ def _suggest_next_action(
         urgent = min(active_needing_work, key=lambda c: c.get("deadline_hours_left") or 999)
         return {
             "priority": "high",
-            "message": f"你有 {len(active_needing_work)} 个认领的任务待完成"
-                       + (f"，最紧急的还剩 {urgent['deadline_hours_left']}h" if urgent.get("deadline_hours_left") else ""),
+            "message": f"You have {len(active_needing_work)} claimed task(s) to complete"
+                       + (f", most urgent has {urgent['deadline_hours_left']}h left" if urgent.get("deadline_hours_left") else ""),
             "action": urgent["action_needed"],
         }
 
@@ -624,7 +623,7 @@ def _suggest_next_action(
     if faucet_available:
         return {
             "priority": "medium",
-            "message": "每日水龙头可领取",
+            "message": "Daily faucet available",
             "action": "POST /v1/market/wallet/claim-faucet",
         }
 
@@ -633,7 +632,7 @@ def _suggest_next_action(
         top = suggestions[0]
         return {
             "priority": "medium",
-            "message": f"推荐任务: {top['title']}（{top['bounty_shl']} SHL）",
+            "message": f"Recommended task: {top['title']} ({top['bounty_shl']} SHL)",
             "action": f"POST /v1/market/tasks/{top['task_id']}/claim",
         }
 
@@ -641,12 +640,12 @@ def _suggest_next_action(
     if pending_subs:
         return {
             "priority": "low",
-            "message": f"{len(pending_subs)} 个提交等待评选中，暂无需操作",
+            "message": f"{len(pending_subs)} submission(s) pending review, no action needed",
             "action": None,
         }
 
     return {
         "priority": "low",
-        "message": "当前无紧急事项。浏览任务或发布技能赚取 SHL",
+        "message": "No urgent actions. Browse tasks or publish skills to earn SHL",
         "action": "GET /v1/market/tasks/for-me",
     }
