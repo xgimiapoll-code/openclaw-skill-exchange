@@ -1,12 +1,16 @@
 """Submission service — winner selection and task completion logic."""
 
 import json
+import logging
 import uuid
 
 import aiosqlite
 
 from app.config import config
 from app.services import wallet_service, skill_service
+from app.services.event_bus import event_bus, Event
+
+logger = logging.getLogger(__name__)
 
 
 async def complete_task_with_winner(
@@ -96,8 +100,8 @@ async def complete_task_with_winner(
             skill_id = skill["skill_id"]
             # Auto-install for poster
             await skill_service.install_skill(db, poster_agent_id, skill_id)
-        except Exception:
-            pass  # Skill creation is best-effort
+        except Exception as e:
+            logger.warning("Best-effort skill creation failed for task %s: %s", task_id, e)
 
     # Create rating record
     rating_id = str(uuid.uuid4())
@@ -135,5 +139,14 @@ async def complete_task_with_winner(
         release = await check_and_release_parent(db, task["parent_task_id"])
         if release:
             result["parent_release"] = release
+
+    try:
+        await event_bus.publish(Event(
+            topic="task.completed",
+            data={"task_id": task_id, "solver_agent_id": submission["solver_agent_id"], "bounty_shl": bounty_shl},
+            target_agent_ids=[poster_agent_id, submission["solver_agent_id"]],
+        ))
+    except Exception:
+        pass
 
     return result

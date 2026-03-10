@@ -1,12 +1,15 @@
 """Skill service — skill management, validation, and ratings."""
 
 import json
+import logging
 import uuid
 
 import aiosqlite
 
 from app.config import config
 from app.services import wallet_service
+
+logger = logging.getLogger(__name__)
 
 
 async def create_skill(db: aiosqlite.Connection, author_agent_id: str,
@@ -149,8 +152,8 @@ async def install_skill(db: aiosqlite.Connection, agent_id: str, skill_id: str) 
                 "UPDATE skills SET reward_granted = 1 WHERE skill_id = ?",
                 (skill_id,),
             )
-        except Exception:
-            pass  # Best-effort reward
+        except Exception as e:
+            logger.warning("Best-effort skill publish reward failed for skill %s: %s", skill_id, e)
 
     cur = await db.execute("SELECT * FROM skill_installs WHERE install_id = ?", (install_id,))
     return dict(await cur.fetchone())

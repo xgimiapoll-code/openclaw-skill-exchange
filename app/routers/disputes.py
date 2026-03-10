@@ -1,6 +1,7 @@
 """Dispute resolution endpoints."""
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -11,7 +12,10 @@ from app.auth.deps import get_current_agent
 from app.config import config
 from app.db import get_db
 from app.models.schemas import DisputeCreate, DisputeOut, DisputeResolveRequest, DisputeVoteRequest
-from app.services import task_engine
+from app.services import task_engine, wallet_service
+from app.services.event_bus import event_bus, Event
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/disputes", tags=["disputes"])
 
@@ -93,6 +97,15 @@ async def create_dispute(
          body.reason, json.dumps(body.evidence), resolution_method),
     )
     await db.commit()
+
+    try:
+        await event_bus.publish(Event(
+            topic="dispute.new",
+            data={"dispute_id": dispute_id, "task_id": task_id, "initiator_agent_id": agent_id},
+            target_agent_ids=[respondent_id],
+        ))
+    except Exception:
+        pass
 
     cur = await db.execute("SELECT * FROM disputes WHERE dispute_id = ?", (dispute_id,))
     return DisputeOut.from_row(dict(await cur.fetchone()))
@@ -202,6 +215,21 @@ async def vote_on_dispute(
             )
             resolved = True
 
+            # Economic impact
+            try:
+                task = await task_engine.get_task(db, dispute["task_id"])
+                if task and status == "resolved_initiator":
+                    bounty_shl = task["bounty_amount"] // 1_000_000
+                    if dispute["initiator_agent_id"] == task["poster_agent_id"]:
+                        comp = max(1, bounty_shl * 50 // 100)
+                    else:
+                        comp = max(1, bounty_shl * 10 // 100)
+                    await wallet_service.grant_dispute_compensation(
+                        db, dispute["initiator_agent_id"], comp, dispute_id
+                    )
+            except Exception as e:
+                logger.warning("Dispute compensation failed for %s: %s", dispute_id, e)
+
     await db.commit()
 
     return {
@@ -249,6 +277,26 @@ async def resolve_dispute(
            resolved_at = datetime('now') WHERE dispute_id = ?""",
         (status, dispute_id),
     )
+
+    # Economic impact of dispute resolution
+    if status == "resolved_initiator":
+        try:
+            task = await task_engine.get_task(db, dispute["task_id"])
+            if task:
+                bounty_shl = task["bounty_amount"] // 1_000_000
+                # Determine if initiator is poster or solver
+                if dispute["initiator_agent_id"] == task["poster_agent_id"]:
+                    # Poster wins: compensate 50% of bounty
+                    comp = max(1, bounty_shl * 50 // 100)
+                else:
+                    # Solver wins: compensate 10% of bounty
+                    comp = max(1, bounty_shl * 10 // 100)
+                await wallet_service.grant_dispute_compensation(
+                    db, dispute["initiator_agent_id"], comp, dispute_id
+                )
+        except Exception as e:
+            logger.warning("Dispute compensation failed for %s: %s", dispute_id, e)
+
     await db.commit()
 
     return {
@@ -274,13 +322,14 @@ async def get_dispute_votes(
         (dispute_id,),
     )
     rows = await cur.fetchall()
-    return [
-        {
-            "vote_id": r["vote_id"],
-            "voter_agent_id": r["voter_agent_id"],
-            "vote": r["vote"],
-            "comment": r.get("comment"),
-            "created_at": r.get("created_at", ""),
-        }
-        for r in rows
-    ]
+    results = []
+    for r in rows:
+        d = dict(r)
+        results.append({
+            "vote_id": d["vote_id"],
+            "voter_agent_id": d["voter_agent_id"],
+            "vote": d["vote"],
+            "comment": d.get("comment"),
+            "created_at": d.get("created_at", ""),
+        })
+    return results

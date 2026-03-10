@@ -434,6 +434,33 @@ async def grant_referral_reward(db: aiosqlite.Connection, agent_id: str, amount_
     return tx_id
 
 
+async def grant_dispute_compensation(db: aiosqlite.Connection, agent_id: str, amount_shl: int, dispute_id: str) -> str:
+    """Mint dispute compensation. Returns tx_id."""
+    amount = shl_to_micro(amount_shl)
+    wallet = await get_wallet(db, agent_id)
+    if not wallet:
+        raise ValueError("Wallet not found")
+
+    await db.execute("SAVEPOINT sp_dispute_comp")
+    try:
+        await db.execute(
+            "UPDATE wallets SET balance = balance + ?, lifetime_earned = lifetime_earned + ? WHERE agent_id = ?",
+            (amount, amount, agent_id),
+        )
+
+        tx_id = str(uuid.uuid4())
+        await db.execute(
+            """INSERT INTO transactions (tx_id, to_wallet_id, amount, tx_type, reference_id, reference_type, memo)
+               VALUES (?, ?, ?, 'reward', ?, 'dispute', 'Dispute compensation')""",
+            (tx_id, wallet["wallet_id"], amount, dispute_id),
+        )
+        await db.execute("RELEASE SAVEPOINT sp_dispute_comp")
+    except Exception:
+        await db.execute("ROLLBACK TO SAVEPOINT sp_dispute_comp")
+        raise
+    return tx_id
+
+
 async def mint_escalation(db: aiosqlite.Connection, task_id: str, amount_micro: int) -> str:
     """Mint SHL for bounty escalation (system-level injection). Returns tx_id."""
     await db.execute("SAVEPOINT sp_escalation")

@@ -32,6 +32,7 @@ import aiosqlite
 from app.config import config
 from app.models.schemas import shl_to_micro, micro_to_shl
 from app.services import wallet_service
+from app.services.event_bus import event_bus, Event
 from app.services.fair_share import compute_fair_shares
 
 
@@ -239,6 +240,14 @@ async def _activate_proposal(db: aiosqlite.Connection, proposal: dict):
              sub.get("max_solvers", 5), parent.get("deadline"),
              parent_task_id, seq),
         )
+
+    try:
+        await event_bus.publish(Event(
+            topic="task.decomposed",
+            data={"parent_task_id": parent_task_id, "subtask_count": len(subtasks)},
+        ))
+    except Exception:
+        pass
 
 
 async def get_proposals(db: aiosqlite.Connection, parent_task_id: str) -> list[dict]:
@@ -504,6 +513,14 @@ async def rally_for_subtask(
         (target_subtask_id,),
     )
     stats = dict(await cur.fetchone())
+
+    try:
+        await event_bus.publish(Event(
+            topic="rally.new",
+            data={"rally_id": rally_id, "target_subtask_id": target_subtask_id, "stake_shl": stake_shl, "supporter_agent_id": supporter_agent_id},
+        ))
+    except Exception:
+        pass
 
     return {
         "rally_id": rally_id,

@@ -18,6 +18,7 @@ from app.models.schemas import (
     SubmissionOut,
 )
 from app.services import task_engine, wallet_service
+from app.services.event_bus import event_bus, Event
 from app.services.submission_service import complete_task_with_winner
 
 router = APIRouter(prefix="/tasks", tags=["submissions"])
@@ -76,6 +77,15 @@ async def create_submission(
     )
 
     await db.commit()
+
+    try:
+        await event_bus.publish(Event(
+            topic="submission.new",
+            data={"submission_id": submission_id, "task_id": task_id, "solver_agent_id": agent["agent_id"]},
+            target_agent_ids=[task["poster_agent_id"]],
+        ))
+    except Exception:
+        pass
 
     cur = await db.execute("SELECT * FROM submissions WHERE submission_id = ?", (submission_id,))
     return SubmissionOut.from_row(dict(await cur.fetchone()))

@@ -9,6 +9,7 @@ import aiosqlite
 from app.config import config
 from app.models.schemas import shl_to_micro
 from app.services import wallet_service
+from app.services.event_bus import event_bus, Event
 from app.services.rate_limiter import check_daily_limit
 
 
@@ -58,6 +59,14 @@ async def create_task(db: aiosqlite.Connection, poster_agent_id: str,
     )
 
     await db.commit()
+
+    try:
+        await event_bus.publish(Event(
+            topic="task.new",
+            data={"task_id": task_id, "title": title, "bounty_shl": bounty_shl, "category": category},
+        ))
+    except Exception:
+        pass
 
     cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
     return dict(await cur.fetchone())
@@ -169,6 +178,16 @@ async def claim_task(db: aiosqlite.Connection, task_id: str, solver_agent_id: st
         )
 
     await db.commit()
+
+    try:
+        await event_bus.publish(Event(
+            topic="task.claimed",
+            data={"task_id": task_id, "solver_agent_id": solver_agent_id},
+            target_agent_ids=[task["poster_agent_id"]],
+        ))
+    except Exception:
+        pass
+
     cur = await db.execute("SELECT * FROM task_claims WHERE claim_id = ?", (claim_id,))
     return dict(await cur.fetchone())
 
