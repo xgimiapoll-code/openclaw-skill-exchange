@@ -64,6 +64,10 @@ async def _get_pg_pool():
         import asyncpg
         # Strip the "postgresql+asyncpg://" scheme prefix to get raw DSN
         dsn = _DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+        # Disable SSL for Fly.io internal network (.flycast) — PG doesn't expose SSL there
+        if ".flycast" in dsn and "sslmode=" not in dsn:
+            sep = "&" if "?" in dsn else "?"
+            dsn += f"{sep}sslmode=disable"
         _pg_pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
     return _pg_pool
 
@@ -80,21 +84,56 @@ class PgConnectionWrapper:
 
     async def execute(self, query: str, params=None):
         query = _sqlite_to_pg(query)
+        stripped = query.lstrip().upper()
+        is_select = stripped.startswith("SELECT") or stripped.startswith("WITH")
         if params:
             query, params = _positional_to_dollar(query, params)
-            result = await self._conn.fetch(query, *params)
+            params = _coerce_params(params)
+            if is_select:
+                result = await self._conn.fetch(query, *params)
+            else:
+                await self._conn.execute(query, *params)
+                result = []
         else:
-            result = await self._conn.fetch(query)
+            if is_select:
+                result = await self._conn.fetch(query)
+            else:
+                await self._conn.execute(query)
+                result = []
         return PgCursorWrapper(result)
 
     async def executescript(self, script: str):
-        await self._conn.execute(script)
+        statements = [s.strip() for s in script.split(";") if s.strip()]
+        for stmt in statements:
+            await self._conn.execute(stmt)
 
     async def commit(self):
         pass  # autocommit in asyncpg
 
     async def close(self):
         await self._conn.close()
+
+
+class _PgRow(dict):
+    """Dict subclass that also supports integer indexing like sqlite3.Row.
+
+    Converts datetime objects to ISO strings for compatibility with
+    SQLite-style code that expects text timestamps.
+    """
+
+    def __init__(self, record):
+        from datetime import datetime
+        converted = {
+            k: v.isoformat().replace("+00:00", "") if isinstance(v, datetime) else v
+            for k, v in record.items()
+        }
+        super().__init__(converted)
+        self._values = list(converted.values())
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return super().__getitem__(key)
 
 
 class PgCursorWrapper:
@@ -105,11 +144,29 @@ class PgCursorWrapper:
 
     async def fetchone(self):
         if self._rows:
-            return dict(self._rows[0])
+            return _PgRow(dict(self._rows[0]))
         return None
 
     async def fetchall(self):
-        return [dict(r) for r in self._rows]
+        return [_PgRow(dict(r)) for r in self._rows]
+
+
+def _coerce_params(params: list) -> list:
+    """Convert ISO timestamp strings to datetime objects for asyncpg TIMESTAMPTZ."""
+    from datetime import datetime, timezone
+    out = []
+    for v in params:
+        if isinstance(v, str) and len(v) >= 19:
+            try:
+                dt = datetime.fromisoformat(v)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                out.append(dt)
+                continue
+            except ValueError:
+                pass
+        out.append(v)
+    return out
 
 
 def _sqlite_to_pg(query: str) -> str:
@@ -133,12 +190,20 @@ def _positional_to_dollar(query: str, params: tuple) -> tuple[str, list]:
 
 
 async def get_db_pg():
-    """Get a PostgreSQL connection (for FastAPI Depends)."""
+    """Get a PostgreSQL connection wrapped in a transaction (for FastAPI Depends).
+
+    The transaction enables SAVEPOINT usage and provides request-level atomicity.
+    """
     pool = await _get_pg_pool()
     conn = await pool.acquire()
-    wrapper = PgConnectionWrapper(conn)
+    tr = conn.transaction()
+    await tr.start()
     try:
-        yield wrapper
+        yield PgConnectionWrapper(conn)
+        await tr.commit()
+    except Exception:
+        await tr.rollback()
+        raise
     finally:
         await pool.release(conn)
 
@@ -148,8 +213,14 @@ async def get_db_ctx_pg():
     """PostgreSQL context manager for background tasks."""
     pool = await _get_pg_pool()
     conn = await pool.acquire()
+    tr = conn.transaction()
+    await tr.start()
     try:
         yield PgConnectionWrapper(conn)
+        await tr.commit()
+    except Exception:
+        await tr.rollback()
+        raise
     finally:
         await pool.release(conn)
 
@@ -492,6 +563,40 @@ async def _init_db_pg():
     schema = SCHEMA_SQL
     # Translate SQLite defaults to PostgreSQL
     schema = schema.replace("datetime('now')", "NOW()")
-    schema = schema.replace("INTEGER DEFAULT 1", "INTEGER DEFAULT 1")  # compatible
+
+    # Convert timestamp TEXT columns to TIMESTAMPTZ for proper PG type handling
+    # 1. Columns with NOW() default: TEXT DEFAULT (NOW()) → TIMESTAMPTZ DEFAULT NOW()
+    schema = re.sub(
+        r'(\w+)\s+TEXT\s+DEFAULT\s+\(NOW\(\)\)',
+        r'\1 TIMESTAMPTZ DEFAULT NOW()',
+        schema,
+    )
+    # 2. Known timestamp columns without defaults
+    for col in (
+        'last_activity_reward', 'last_faucet_claim', 'deadline',
+        'first_claimed_at', 'resolved_at', 'completed_at', 'confirmed_at',
+    ):
+        schema = re.sub(rf'({col})\s+TEXT\b', rf'\1 TIMESTAMPTZ', schema)
+
+    # SQLite INTEGER booleans → PG keeps INTEGER (compatible)
+    # Split into individual statements — asyncpg can't run multiple in one call
+    statements = [s.strip() for s in schema.split(";") if s.strip()]
+
     async with pool.acquire() as conn:
-        await conn.execute(schema)
+        # Check if schema needs recreation (e.g. TEXT→TIMESTAMPTZ migration)
+        col_type = await conn.fetchval(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name='agents' AND column_name='created_at'"
+        )
+        if col_type and col_type == 'text':
+            # Drop all tables to recreate with correct types
+            tables = await conn.fetch(
+                "SELECT tablename FROM pg_tables WHERE schemaname='public'"
+            )
+            async with conn.transaction():
+                for t in tables:
+                    await conn.execute(f'DROP TABLE IF EXISTS "{t["tablename"]}" CASCADE')
+
+        async with conn.transaction():
+            for stmt in statements:
+                await conn.execute(stmt)
