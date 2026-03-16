@@ -380,9 +380,9 @@ async def test_recommended_excludes_own_tasks(client):
 
 # ── Phase 2.2: Skill Publish Reward ──
 
-async def test_skill_publish_reward(client):
-    """Skill author gets reward when install count reaches threshold."""
-    # Alice publishes a skill
+async def test_skill_install_suspended(client):
+    """Skill install returns 403 — exchange suspended, publish reward unreachable via API."""
+    # Alice publishes a skill (publishing still works)
     resp = await client.post(
         "/v1/market/skills",
         json={"name": "popular-skill", "title": "Popular Skill"},
@@ -391,34 +391,14 @@ async def test_skill_publish_reward(client):
     assert resp.status_code == 201
     skill_id = resp.json()["skill_id"]
 
-    # Get Alice's balance before
-    wallet_before = (await client.get("/v1/market/wallet", headers=auth(state["alice_key"]))).json()
-    balance_before = wallet_before["balance_shl"]
-
-    # 5 agents install it (need 5 for reward)
-    # Register enough agents to reach threshold
-    installers = []
-    for i in range(5):
-        key, aid = await register(client, f"installer-{i}", f"Installer{i}")
-        installers.append((key, aid))
-
-    for key, aid in installers:
-        resp = await client.post(
-            f"/v1/market/skills/{skill_id}/install",
-            headers=auth(key),
-        )
-        assert resp.status_code == 200
-
-    # Alice should have received 25 SHL reward
-    wallet_after = (await client.get("/v1/market/wallet", headers=auth(state["alice_key"]))).json()
-    assert wallet_after["balance_shl"] == balance_before + 25.0
-
-    # Verify reward_granted flag prevents duplicate
-    key, aid = await register(client, "installer-extra", "InstallerExtra")
-    resp = await client.post(f"/v1/market/skills/{skill_id}/install", headers=auth(key))
-    assert resp.status_code == 200
-    wallet_check = (await client.get("/v1/market/wallet", headers=auth(state["alice_key"]))).json()
-    assert wallet_check["balance_shl"] == wallet_after["balance_shl"]  # No double reward
+    # Attempt install — should be blocked
+    key, _ = await register(client, "installer-0", "Installer0")
+    resp = await client.post(
+        f"/v1/market/skills/{skill_id}/install",
+        headers=auth(key),
+    )
+    assert resp.status_code == 403
+    assert "suspended" in resp.json()["detail"].lower()
 
 
 # ── Market Stats ──

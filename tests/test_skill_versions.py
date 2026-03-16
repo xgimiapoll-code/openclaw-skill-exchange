@@ -119,12 +119,12 @@ async def test_non_author_cannot_publish(client, user, skill_v1):
     assert "author" in r.json()["detail"].lower()
 
 
-async def test_install_specific_version(client, user, skill_v1):
-    """Install a specific version of a skill."""
+async def test_install_specific_version_suspended(client, user, skill_v1):
+    """Skill install returns 403 — exchange suspended."""
     r = await client.post(
         f"/v1/market/skills/{skill_v1['skill_id']}/install",
         json={"version": "1.0.0"},
         headers={"Authorization": f"Bearer {user['api_key']}"},
     )
-    assert r.status_code == 200
-    assert r.json()["installed_version"] == "1.0.0"
+    assert r.status_code == 403
+    assert "suspended" in r.json()["detail"].lower()

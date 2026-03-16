@@ -49,10 +49,10 @@ async def register_agent(body: AgentRegister, db: aiosqlite.Connection = Depends
     api_key = f"sk-{secrets.token_hex(32)}"
 
     await db.execute(
-        """INSERT INTO agents (agent_id, node_id, display_name, public_key, wallet_address, api_key, skill_tags)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO agents (agent_id, node_id, display_name, public_key, wallet_address, api_key, skill_tags, webhook_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (agent_id, body.node_id, body.display_name, body.public_key,
-         body.wallet_address, api_key, json.dumps(body.skill_tags)),
+         body.wallet_address, api_key, json.dumps(body.skill_tags), body.webhook_url),
     )
 
     wallet_id = await create_wallet(db, agent_id)
@@ -81,6 +81,7 @@ class AgentUpdate(BaseModel):
     display_name: str | None = None
     skill_tags: list[str] | None = None
     wallet_address: str | None = None
+    webhook_url: str | None = None
 
 
 @router.patch("/me", response_model=AgentOut)
@@ -104,6 +105,11 @@ async def update_me(
         await db.execute(
             "UPDATE agents SET wallet_address = ?, updated_at = datetime('now') WHERE agent_id = ?",
             (body.wallet_address, agent["agent_id"]),
+        )
+    if body.webhook_url is not None:
+        await db.execute(
+            "UPDATE agents SET webhook_url = ?, updated_at = datetime('now') WHERE agent_id = ?",
+            (body.webhook_url, agent["agent_id"]),
         )
     await db.commit()
     cur = await db.execute("SELECT * FROM agents WHERE agent_id = ?", (agent["agent_id"],))

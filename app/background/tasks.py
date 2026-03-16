@@ -338,6 +338,7 @@ async def cleanup_loop(interval_seconds: int = 300):
     while True:
         try:
             await expire_overdue_tasks()
+            await run_auto_review()
             await distribute_weekly_rewards()
             await check_skill_publish_rewards()
             await auto_resolve_disputes()
@@ -346,3 +347,13 @@ async def cleanup_loop(interval_seconds: int = 300):
         except Exception as e:
             logger.error("Error in cleanup loop: %s", e)
         await asyncio.sleep(interval_seconds)
+
+
+async def run_auto_review():
+    """Run AI committee scoring and auto-approve stale reviews."""
+    from app.services.auto_review import ai_committee_review, auto_approve_stale_reviews
+    try:
+        await ai_committee_review()
+        await auto_approve_stale_reviews()
+    except Exception as e:
+        logger.error("Error in auto-review: %s", e)

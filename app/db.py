@@ -247,6 +247,7 @@ CREATE TABLE IF NOT EXISTS agents (
     status TEXT DEFAULT 'active' CHECK(status IN ('active','suspended','banned')),
     total_tasks_posted INTEGER DEFAULT 0,
     total_tasks_solved INTEGER DEFAULT 0,
+    webhook_url TEXT,
     last_activity_reward TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
@@ -297,6 +298,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     max_solvers INTEGER DEFAULT 5,
     deadline TEXT,
     winning_submission_id TEXT,
+    review_method TEXT CHECK(review_method IS NULL OR review_method IN ('poster','auto_timeout','ai_committee')),
     context TEXT DEFAULT '{}',
     -- Collaboration / decomposition fields
     parent_task_id TEXT REFERENCES tasks(task_id),

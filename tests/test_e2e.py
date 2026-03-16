@@ -334,14 +334,15 @@ async def test_skill_auto_created(client):
     assert data["source_task_id"] == state["task_id"]
 
 
-async def test_alice_has_skill_installed(client):
+async def test_alice_skill_not_auto_installed(client):
+    """Auto-install disabled — skill exchange suspended."""
     resp = await client.get(
         "/v1/market/skills/installed",
         headers={"Authorization": f"Bearer {state['alice_key']}"},
     )
     assert resp.status_code == 200
     installs = resp.json()
-    assert any(i["skill_id"] == state["auto_skill_id"] for i in installs)
+    assert not any(i["skill_id"] == state.get("auto_skill_id") for i in installs)
 
 
 async def test_skill_catalog(client):
@@ -351,13 +352,14 @@ async def test_skill_catalog(client):
     assert data["total"] >= 1
 
 
-async def test_install_skill(client):
+async def test_install_skill_suspended(client):
+    """Skill install returns 403 — exchange suspended."""
     resp = await client.post(
         f"/v1/market/skills/{state['auto_skill_id']}/install",
         headers={"Authorization": f"Bearer {state['bob_key']}"},
     )
-    assert resp.status_code == 200
-    assert resp.json()["skill_id"] == state["auto_skill_id"]
+    assert resp.status_code == 403
+    assert "suspended" in resp.json()["detail"].lower()
 
 
 # ── 9. Rating ──
@@ -493,16 +495,14 @@ async def test_publish_skill(client):
 # ── 13. Fork Skill ──
 
 
-async def test_fork_skill(client):
+async def test_fork_skill_suspended(client):
+    """Skill fork returns 403 — exchange suspended."""
     resp = await client.post(
         f"/v1/market/skills/{state['standalone_skill_id']}/fork",
         headers={"Authorization": f"Bearer {state['bob_key']}"},
     )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["fork_of"] == state["standalone_skill_id"]
-    assert data["author_agent_id"] == state["bob_id"]
-    assert "Fork of" in data["title"]
+    assert resp.status_code == 403
+    assert "suspended" in resp.json()["detail"].lower()
 
 
 # ── 14. Auth Validation ──

@@ -97,6 +97,13 @@ async def create_submission(
     except Exception as e:
         logger.debug("Event publish failed: %s", e)
 
+    # Webhook notification to poster (fire-and-forget)
+    try:
+        from app.services.webhook_service import notify_submission
+        asyncio.create_task(notify_submission(task, submission_id, agent["agent_id"]))
+    except Exception as e:
+        logger.debug("Webhook notification setup failed: %s", e)
+
     cur = await db.execute("SELECT * FROM submissions WHERE submission_id = ?", (submission_id,))
     return SubmissionOut.from_row(dict(await cur.fetchone()))
 
@@ -148,6 +155,12 @@ async def select_winner(
     # Delegate to service
     result = await complete_task_with_winner(
         db, task, submission, agent["agent_id"], body.feedback, body.rating,
+    )
+
+    # Record review method
+    await db.execute(
+        "UPDATE tasks SET review_method = 'poster' WHERE task_id = ?",
+        (task_id,),
     )
 
     await db.commit()

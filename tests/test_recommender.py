@@ -90,21 +90,15 @@ async def test_skill_recommendations(client, solver, poster):
 
     headers_solver = {"Authorization": f"Bearer {solver['api_key']}"}
 
-    # Before installing, should appear in recommendations
+    # Should appear in recommendations (browse-only catalog)
     r = await client.get("/v1/market/skills/recommended", headers=headers_solver)
     assert r.status_code == 200
     rec_ids = [s["skill_id"] for s in r.json()["skills"]]
     assert skill_id in rec_ids
 
-    # Install the skill
+    # Install suspended — should return 403
     r = await client.post(f"/v1/market/skills/{skill_id}/install", headers=headers_solver)
-    assert r.status_code == 200
-
-    # After installing, should NOT appear in recommendations
-    r = await client.get("/v1/market/skills/recommended", headers=headers_solver)
-    assert r.status_code == 200
-    rec_ids = [s["skill_id"] for s in r.json()["skills"]]
-    assert skill_id not in rec_ids
+    assert r.status_code == 403
 
 
 async def test_recommendations_exclude_own_tasks(client, poster, tasks_created):

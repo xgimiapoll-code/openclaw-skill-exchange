@@ -35,6 +35,11 @@ class MarketConfig(BaseSettings):
     reputation_ban_threshold: int = -10
     master_reputation_threshold: int = 80
 
+    # Auto-review
+    auto_review_grace_hours: int = 24  # AI committee reviews after this many hours in_review
+    auto_approve_timeout_hours: int = 48  # auto-approve best submission after this many hours
+    auto_review_default_rating: int = 3  # default rating for auto-approved submissions
+
     # Disputes
     dispute_auto_resolve_hours: int = 72
     dispute_auto_resolve_max_shl: int = 10

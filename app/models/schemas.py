@@ -28,6 +28,7 @@ class AgentRegister(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=64)
     public_key: str | None = None
     wallet_address: str | None = None  # On-chain wallet address (0x...)
+    webhook_url: str | None = None  # URL to receive event notifications (POST)
     skill_tags: list[str] = Field(default_factory=list)
 
 
@@ -40,6 +41,7 @@ class AgentOut(BaseModel):
     status: str
     total_tasks_posted: int
     total_tasks_solved: int
+    webhook_url: str | None = None
     created_at: str
 
     @classmethod
@@ -56,6 +58,7 @@ class AgentOut(BaseModel):
             status=row.get("status", "active"),
             total_tasks_posted=row.get("total_tasks_posted", 0),
             total_tasks_solved=row.get("total_tasks_solved", 0),
+            webhook_url=row.get("webhook_url"),
             created_at=row.get("created_at", ""),
         )
 
@@ -148,6 +151,7 @@ class TaskOut(BaseModel):
     max_solvers: int
     deadline: str | None
     winning_submission_id: str | None
+    review_method: str | None = None
     claim_count: int = 0
     submission_count: int = 0
     created_at: str
@@ -172,6 +176,7 @@ class TaskOut(BaseModel):
             max_solvers=row.get("max_solvers", 5),
             deadline=row.get("deadline"),
             winning_submission_id=row.get("winning_submission_id"),
+            review_method=row.get("review_method"),
             claim_count=claim_count,
             submission_count=submission_count,
             created_at=row.get("created_at", ""),

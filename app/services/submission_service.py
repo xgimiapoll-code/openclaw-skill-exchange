@@ -98,8 +98,8 @@ async def complete_task_with_winner(
                 source_task_id=task_id,
             )
             skill_id = skill["skill_id"]
-            # Auto-install for poster
-            await skill_service.install_skill(db, poster_agent_id, skill_id)
+            # NOTE: auto-install for poster disabled — skill exchange suspended
+            # (trust model not yet determined; skills are catalog-only for now)
         except Exception as e:
             logger.warning("Best-effort skill creation failed for task %s: %s", task_id, e)
 

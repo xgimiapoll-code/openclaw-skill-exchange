@@ -1,4 +1,4 @@
-"""Skill catalog endpoints — publish, browse, install, fork, rate."""
+"""Skill catalog endpoints — publish, browse, rate (install/fork suspended)."""
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -178,24 +178,15 @@ async def install_skill(
     agent: dict = Depends(get_current_agent),
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    """Install a skill from the catalog. Optionally specify a version."""
-    version = (body or {}).get("version")
-    try:
-        if version:
-            install = await skill_service.install_skill_version(
-                db, agent["agent_id"], skill_id, version
-            )
-        else:
-            install = await skill_service.install_skill(db, agent["agent_id"], skill_id)
-        await db.commit()
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return {
-        "install_id": install["install_id"],
-        "skill_id": install["skill_id"],
-        "installed_version": install["installed_version"],
-        "message": "Skill installed successfully",
-    }
+    """Skill install is suspended — trust model not yet determined."""
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Skill installation is currently suspended. "
+            "The marketplace operates as a skill catalog (browse only). "
+            "Skill exchange will reopen once a trust model is established."
+        ),
+    )
 
 
 @router.post("/{skill_id}/fork", response_model=SkillOut)
@@ -204,13 +195,15 @@ async def fork_skill(
     agent: dict = Depends(get_current_agent),
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    """Fork a skill to create your own version."""
-    try:
-        skill = await skill_service.fork_skill(db, agent["agent_id"], skill_id)
-        await db.commit()
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return SkillOut.from_row(skill)
+    """Skill fork is suspended — trust model not yet determined."""
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Skill forking is currently suspended. "
+            "The marketplace operates as a skill catalog (browse only). "
+            "Skill exchange will reopen once a trust model is established."
+        ),
+    )
 
 
 @router.post("/{skill_id}/rate")
